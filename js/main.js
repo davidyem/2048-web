@@ -148,6 +148,7 @@ window.addEventListener('pagehide', () => {
 const game = new Game(storage);
 const renderer = new Renderer();
 let activeMove = null;
+let pendingDirection = null;
 let moveSerial = 0;
 let interruptedMoves = 0;
 
@@ -199,6 +200,13 @@ function restoreGameState() {
   return true;
 }
 
+function runPendingMove() {
+  if (!pendingDirection) return;
+  const direction = pendingDirection;
+  pendingDirection = null;
+  performMove(direction);
+}
+
 function commitMove(move, { interrupted = false } = {}) {
   if (!move || move.done) return;
   move.done = true;
@@ -236,15 +244,18 @@ function commitMove(move, { interrupted = false } = {}) {
   if (state) {
     renderer.showState(state);
     if (!state.showContinue) {
+      pendingDirection = null;
       flushBestScore();
       clearGameState();
       return;
     }
   }
   scheduleGameStateSave();
+  runPendingMove();
 }
 
 function cancelActiveMove() {
+  pendingDirection = null;
   if (!activeMove) return;
   activeMove.done = true;
   activeMove = null;
@@ -253,17 +264,19 @@ function cancelActiveMove() {
 function interruptActiveMove() {
   if (!activeMove) return;
 
-  // Finish the current movement animations before committing so rapid
-  // input always starts from the latest visual target without a move queue.
+  pendingDirection = null;
   renderer.finishTileMoves(game.tiles, activeMove.result.motions);
   renderer.cancelTilePulses();
   commitMove(activeMove, { interrupted: true });
 }
 
 function performMove(direction) {
-  // There is deliberately no move queue. The latest gesture always acts
-  // on the latest committed board state instead of waiting for animation.
-  if (activeMove) interruptActiveMove();
+  // Keep only the latest direction while a move is active. It runs as soon
+  // as that move commits, so rapid input cannot build up a move backlog.
+  if (activeMove) {
+    pendingDirection = direction;
+    return;
+  }
   if (renderer.isOverlayShown() && !game.keepPlaying) return;
 
   const result = game.calculateMove(direction);
@@ -357,6 +370,7 @@ window.__2048Debug = {
   getAnimationState() {
     return {
       active: Boolean(activeMove),
+      pendingDirection,
       moveSerial,
       interruptedMoves,
       moveMs: MOVE_MS
