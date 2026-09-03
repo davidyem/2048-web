@@ -74,7 +74,7 @@ function interruptActiveMove() {
 
   // Finish the current transform transitions before committing so rapid
   // input always starts from the latest visual target without a move queue.
-  renderer.finishTileMoves();
+  renderer.finishTileMoves(game.tiles, activeMove.result.motions);
   renderer.cancelTilePulses();
   commitMove(activeMove, { interrupted: true });
 }

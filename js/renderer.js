@@ -50,8 +50,12 @@ export class Renderer {
     }
   }
 
-  finishTileMoves() {
-    for (const el of this.tileElements.values()) {
+  finishTileMoves(tiles, motions) {
+    for (const tile of tiles) {
+      const target = motions.get(tile.id);
+      if (!target || (target.row === tile.row && target.col === tile.col)) continue;
+      const el = this.getTileEl(tile.id);
+      if (!el) continue;
       for (const animation of el.getAnimations()) {
         animation.finish();
         animation.cancel();
