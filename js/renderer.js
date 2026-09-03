@@ -1,6 +1,6 @@
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-export const MOVE_MS = REDUCED_MOTION ? 1 : 72;
+export const MOVE_MS = REDUCED_MOTION ? 1 : 100;
 export const MOVE_SETTLE_MS = MOVE_MS + 18;
 
 export class Renderer {
@@ -47,6 +47,15 @@ export class Renderer {
       const inner = el.querySelector('.tile-inner');
       if (!inner) continue;
       for (const animation of inner.getAnimations()) animation.cancel();
+    }
+  }
+
+  finishTileMoves() {
+    for (const el of this.tileElements.values()) {
+      for (const animation of el.getAnimations()) {
+        animation.finish();
+        animation.cancel();
+      }
     }
   }
 

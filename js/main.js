@@ -72,16 +72,11 @@ function cancelActiveMove() {
 function interruptActiveMove() {
   if (!activeMove) return;
 
-  // If a transition is retargeted while it is still running, its new
-  // duration starts from the interpolated position and the picture can
-  // trail behind rapid input. Snap the old move to its target for one
-  // style flush, commit the state, then enable transitions again.
-  renderer.tileLayer.classList.add('instant');
+  // Finish the current transform transitions before committing so rapid
+  // input always starts from the latest visual target without a move queue.
+  renderer.finishTileMoves();
   renderer.cancelTilePulses();
-  void renderer.tileLayer.offsetWidth;
   commitMove(activeMove, { interrupted: true });
-  renderer.tileLayer.classList.remove('instant');
-  void renderer.tileLayer.offsetWidth;
 }
 
 function performMove(direction) {

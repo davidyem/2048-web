@@ -6,7 +6,7 @@
       --cell: rgba(238, 228, 218, 0.35);
       --gap: clamp(9px, 2.4vw, 13px);
       --radius: clamp(7px, 1.7vw, 10px);
-      --move-ms: 72ms;
+      --move-ms: 100ms;
       --shadow: 0 14px 40px rgba(93, 77, 64, 0.08);
     }
 
@@ -173,10 +173,6 @@
       pointer-events: none;
       z-index: 2;
     }
-
-    /* A rapid follow-up move finishes the previous visual step immediately,
-       so transforms never build up a delayed animation tail. */
-    .tile-layer.instant .tile { transition: none !important; }
 
     .tile {
       --row: 0;
