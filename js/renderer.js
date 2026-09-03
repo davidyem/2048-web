@@ -1,6 +1,9 @@
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export const MOVE_MS = REDUCED_MOTION ? 1 : 110;
+const MOVE_MIN_MS = 105;
+const MOVE_STEP_MS = 10;
+const MOVE_MAX_MS = 125;
 
 export class Renderer {
   constructor() {
@@ -169,6 +172,12 @@ export class Renderer {
     return `translate3d(calc(${col} * (100% + var(--gap))), calc(${row} * (100% + var(--gap))), 0) scale(var(--scale))`;
   }
 
+  movementDuration(from, to) {
+    if (REDUCED_MOTION) return MOVE_MS;
+    const distance = Math.abs(to.row - from.row) + Math.abs(to.col - from.col);
+    return Math.min(MOVE_MAX_MS, MOVE_MIN_MS + (distance - 1) * MOVE_STEP_MS);
+  }
+
   animateTileMovement(entry, from, to) {
     this.cancelTileMovement(entry);
     this.setTilePosition(entry.el, to.row, to.col);
@@ -176,7 +185,7 @@ export class Renderer {
       { transform: this.tileTransform(from.row, from.col) },
       { transform: this.tileTransform(to.row, to.col) }
     ], {
-      duration: MOVE_MS,
+      duration: this.movementDuration(from, to),
       easing: 'ease-in-out'
     });
     entry.movement = animation;
