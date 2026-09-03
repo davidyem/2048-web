@@ -2,6 +2,8 @@ import { Game, SIZE } from './game.js';
 import { Input } from './input.js';
 import { MOVE_MS, MOVE_SETTLE_MS, Renderer } from './renderer.js';
 
+document.documentElement.style.setProperty('--move-ms', `${MOVE_MS}ms`);
+
 const storage = {
   get(key) { try { return localStorage.getItem(key); } catch { return null; } },
   set(key, value) { try { localStorage.setItem(key, value); } catch {} }

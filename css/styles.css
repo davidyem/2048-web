@@ -6,7 +6,6 @@
       --cell: rgba(238, 228, 218, 0.35);
       --gap: clamp(9px, 2.4vw, 13px);
       --radius: clamp(7px, 1.7vw, 10px);
-      --move-ms: 100ms;
       --shadow: 0 14px 40px rgba(93, 77, 64, 0.08);
     }
 
@@ -190,7 +189,7 @@
           0
         )
         scale(var(--scale));
-      transition: transform var(--move-ms) cubic-bezier(.18,.72,.22,1);
+      transition: transform var(--move-ms) ease-in-out;
       will-change: transform;
       backface-visibility: hidden;
       -webkit-backface-visibility: hidden;
