@@ -1,0 +1,453 @@
+    :root {
+      --page-bg: #faf8ef;
+      --ink: #776e65;
+      --muted: #8f7f70;
+      --board: #bbada0;
+      --cell: rgba(238, 228, 218, 0.35);
+      --gap: clamp(9px, 2.4vw, 13px);
+      --radius: clamp(7px, 1.7vw, 10px);
+      --move-ms: 72ms;
+      --shadow: 0 14px 40px rgba(93, 77, 64, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { min-height: 100%; }
+
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      overflow: hidden;
+      background: var(--page-bg);
+      color: var(--ink);
+      font-family: ui-rounded, "SF Pro Rounded", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overscroll-behavior: none;
+      touch-action: none;
+    }
+
+    button { font: inherit; }
+
+
+    .app {
+      width: min(100% - 28px, 520px);
+      min-height: 100dvh;
+      margin: 0 auto;
+      padding: max(20px, env(safe-area-inset-top)) 0 max(24px, env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: clamp(104px, 27vw, 132px) 1fr;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .logo-tile {
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #f2c515;
+      color: #fff;
+      font-size: clamp(36px, 9vw, 48px);
+      line-height: 1;
+      letter-spacing: -.07em;
+      font-weight: 900;
+      box-shadow: var(--shadow);
+    }
+
+    .score-panel {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: 1fr auto;
+      gap: 8px;
+    }
+
+    .scores {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .scorebox {
+      min-width: 0;
+      border-radius: 8px;
+      padding: 12px 8px 10px;
+      background: #b9aa9f;
+      color: #fff;
+      text-align: center;
+      box-shadow: var(--shadow);
+    }
+
+    .scorebox .label {
+      display: block;
+      font-size: clamp(11px, 2.8vw, 13px);
+      line-height: 1.05;
+      font-weight: 850;
+      letter-spacing: .06em;
+      color: #f5eee8;
+    }
+
+    .scorebox .value {
+      display: block;
+      margin-top: 7px;
+      font-size: clamp(25px, 7.2vw, 35px);
+      line-height: .95;
+      font-weight: 900;
+      letter-spacing: -.035em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .hint {
+      margin: 0 1px 14px;
+      font-size: clamp(14px, 3.8vw, 17px);
+      line-height: 1.3;
+      color: #6f665f;
+      font-weight: 520;
+    }
+
+    .new-game {
+      width: 100%;
+      border: 0;
+      border-radius: 6px;
+      padding: 9px 12px;
+      background: #ef9b63;
+      color: #fff;
+      font-size: 13px;
+      letter-spacing: .035em;
+      font-weight: 900;
+      cursor: pointer;
+      transition: transform 90ms ease, filter 100ms ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .new-game:hover { filter: brightness(1.04); }
+    .new-game:active { transform: scale(.985); }
+    .new-game:focus-visible { outline: 3px solid rgba(239, 155, 99, .28); outline-offset: 3px; }
+
+    .board-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1;
+      border-radius: calc(var(--radius) + 2px);
+      box-shadow: var(--shadow);
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: none;
+      contain: layout paint style;
+    }
+
+    .board {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      padding: var(--gap);
+      border-radius: inherit;
+      background: var(--board);
+    }
+
+    .grid {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: repeat(4, 1fr);
+      gap: var(--gap);
+    }
+
+    .cell {
+      border-radius: var(--radius);
+      background: var(--cell);
+    }
+
+    .tile-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    /* A rapid follow-up move finishes the previous visual step immediately,
+       so transforms never build up a delayed animation tail. */
+    .tile-layer.instant .tile { transition: none !important; }
+
+    .tile {
+      --row: 0;
+      --col: 0;
+      --scale: 1;
+      position: absolute;
+      top: var(--gap);
+      left: var(--gap);
+      width: calc((100% - (5 * var(--gap))) / 4);
+      height: calc((100% - (5 * var(--gap))) / 4);
+      transform:
+        translate3d(
+          calc(var(--col) * (100% + var(--gap))),
+          calc(var(--row) * (100% + var(--gap))),
+          0
+        )
+        scale(var(--scale));
+      transition: transform var(--move-ms) cubic-bezier(.18,.72,.22,1);
+      will-change: transform;
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+      z-index: 3;
+    }
+
+    .tile-inner {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      place-items: center;
+      border-radius: var(--radius);
+      background: #eee4da;
+      color: #776e65;
+      font-size: clamp(30px, 10vw, 54px);
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: -.055em;
+      box-shadow: 0 2px 5px rgba(63, 51, 42, .04);
+      transform: translateZ(0) scale(1);
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+    }
+
+    .tile[data-value="4"] .tile-inner { background: #f1e4ca; }
+    .tile[data-value="8"] .tile-inner { background: #f3ae70; color: #fff; }
+    .tile[data-value="16"] .tile-inner { background: #f18a57; color: #fff; }
+    .tile[data-value="32"] .tile-inner { background: #f36d52; color: #fff; }
+    .tile[data-value="64"] .tile-inner { background: #ef4e36; color: #fff; }
+    .tile[data-value="128"] .tile-inner { background: #edcf72; color: #f9f6f2; font-size: clamp(26px, 8.6vw, 46px); }
+    .tile[data-value="256"] .tile-inner { background: #edcc61; color: #f9f6f2; font-size: clamp(26px, 8.6vw, 46px); }
+    .tile[data-value="512"] .tile-inner { background: #edc850; color: #f9f6f2; font-size: clamp(26px, 8.6vw, 46px); }
+    .tile[data-value="1024"] .tile-inner { background: #edc53f; color: #f9f6f2; font-size: clamp(21px, 7.2vw, 38px); }
+    .tile[data-value="2048"] .tile-inner { background: #edc22e; color: #f9f6f2; font-size: clamp(21px, 7.2vw, 38px); box-shadow: 0 0 24px rgba(237, 194, 46, .28); }
+    .tile[data-value="4096"] .tile-inner,
+    .tile[data-value="8192"] .tile-inner { background: #3c3a32; color: #f9f6f2; font-size: clamp(21px, 7.2vw, 38px); }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 10;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      border-radius: inherit;
+      background: rgba(250, 248, 239, .74);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 180ms ease, visibility 180ms ease;
+    }
+
+    .overlay.show { opacity: 1; visibility: visible; }
+
+    .overlay-card {
+      text-align: center;
+      transform: translateY(4px) scale(.98);
+      transition: transform 180ms ease;
+    }
+
+    .overlay.show .overlay-card { transform: translateY(0) scale(1); }
+
+    .overlay h2 {
+      margin: 0 0 8px;
+      color: #776e65;
+      font-size: clamp(32px, 9vw, 48px);
+      letter-spacing: -.045em;
+    }
+
+    .overlay p {
+      margin: 0 0 18px;
+      color: #8f7f70;
+      font-weight: 650;
+    }
+
+    .overlay-actions { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
+
+    .overlay-actions button {
+      border: 0;
+      border-radius: 8px;
+      padding: 11px 15px;
+      background: #8f7a66;
+      color: #fff;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .overlay-actions .secondary { background: rgba(143, 122, 102, .16); color: #776e65; }
+
+    .gesture-note {
+      margin: 13px 2px 0;
+      text-align: center;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #a29283;
+    }
+
+    .trackpad-config {
+      appearance: none;
+      border: 0;
+      padding: 2px 4px;
+      margin: 0 0 0 3px;
+      background: transparent;
+      color: #8f7a66;
+      font: inherit;
+      font-weight: 800;
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 2px;
+      cursor: pointer;
+    }
+
+    .trackpad-config:hover { color: #6f6257; }
+    .trackpad-config:focus-visible { outline: 2px solid rgba(143, 122, 102, .35); outline-offset: 2px; border-radius: 3px; }
+
+    @media (hover: none) and (pointer: coarse) {
+      .desktop-gesture { display: none; }
+    }
+
+    .trackpad-setup {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(250, 248, 239, .86);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 160ms ease, visibility 160ms ease;
+      touch-action: none;
+    }
+
+    .trackpad-setup.show {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+
+    .trackpad-setup-card {
+      width: min(100%, 360px);
+      padding: 28px 24px 22px;
+      border-radius: 14px;
+      background: #fffdf8;
+      text-align: center;
+      box-shadow: 0 22px 70px rgba(93, 77, 64, .18);
+      transform: translateY(5px) scale(.985);
+      transition: transform 160ms ease;
+    }
+
+    .trackpad-setup.show .trackpad-setup-card { transform: translateY(0) scale(1); }
+
+    .trackpad-swipe-demo {
+      width: 114px;
+      height: 58px;
+      margin: 0 auto 16px;
+      position: relative;
+    }
+
+    .trackpad-swipe-demo::before {
+      content: '';
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      top: 28px;
+      height: 3px;
+      border-radius: 3px;
+      background: #d9cfc6;
+    }
+
+    .trackpad-swipe-demo::after {
+      content: '←';
+      position: absolute;
+      top: 0;
+      left: 58px;
+      width: 56px;
+      color: #ef9b63;
+      font-size: 52px;
+      line-height: 1;
+      font-weight: 900;
+      animation: calibrate-swipe 1.15s ease-in-out infinite;
+    }
+
+    @keyframes calibrate-swipe {
+      0%, 18% { transform: translateX(0); opacity: .35; }
+      68%, 84% { transform: translateX(-58px); opacity: 1; }
+      100% { transform: translateX(-58px); opacity: 0; }
+    }
+
+    .trackpad-setup h2 {
+      margin: 0 0 8px;
+      color: #776e65;
+      font-size: 27px;
+      line-height: 1.1;
+      letter-spacing: -.035em;
+    }
+
+    .trackpad-setup p {
+      margin: 0 auto 18px;
+      max-width: 285px;
+      color: #8f7f70;
+      font-size: 15px;
+      line-height: 1.45;
+      font-weight: 620;
+    }
+
+    .trackpad-setup-status {
+      min-height: 20px;
+      margin-top: -7px !important;
+      margin-bottom: 12px !important;
+      color: #ef9b63 !important;
+      font-size: 13px !important;
+      font-weight: 800 !important;
+    }
+
+    .trackpad-skip {
+      appearance: none;
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: rgba(143, 122, 102, .13);
+      color: #776e65;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 820;
+      cursor: pointer;
+    }
+
+    .trackpad-skip:hover { background: rgba(143, 122, 102, .2); }
+
+    @media (max-width: 430px) {
+      .app {
+        width: min(100% - 22px, 520px);
+        justify-content: flex-start;
+        padding-top: max(16px, env(safe-area-inset-top));
+      }
+      .topbar { grid-template-columns: 96px 1fr; gap: 10px; margin-bottom: 10px; }
+      .scorebox { padding: 9px 6px 8px; }
+      .new-game { padding: 7px 9px; font-size: 11px; }
+      .hint { margin-bottom: 11px; font-size: 14px; }
+    }
+
+    @media (max-height: 700px) and (orientation: landscape) {
+      .app { width: min(100% - 24px, 460px); padding-block: 12px; }
+      .topbar { margin-bottom: 8px; }
+      .hint, .gesture-note { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      :root { --move-ms: 1ms; }
+      .tile, .overlay, .overlay-card, .new-game, .trackpad-setup, .trackpad-setup-card, .trackpad-swipe-demo::after { animation: none !important; transition-duration: 1ms !important; }
+    }

@@ -1,6 +1,6 @@
 # 2048 Web
 
-A browser version of the classic 2048 puzzle, built as a single static HTML file with embedded CSS and JavaScript.
+A browser version of the classic 2048 puzzle, built with static HTML, CSS, and native JavaScript modules.
 
 ## Controls
 
