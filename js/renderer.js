@@ -1,6 +1,6 @@
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-export const MOVE_MS = REDUCED_MOTION ? 1 : 100;
+export const MOVE_MS = REDUCED_MOTION ? 1 : 110;
 export const MOVE_SETTLE_MS = MOVE_MS + 18;
 
 export class Renderer {
