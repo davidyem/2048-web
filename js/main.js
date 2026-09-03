@@ -4,9 +4,19 @@ import { MOVE_MS, MOVE_SETTLE_MS, Renderer } from './renderer.js';
 
 document.documentElement.style.setProperty('--move-ms', `${MOVE_MS}ms`);
 
+const requestedTestMode = new URLSearchParams(window.location.search).get('test');
+const testMode = ['normal', 'no-spawn', 'no-pulses', 'no-storage'].includes(requestedTestMode)
+  ? requestedTestMode
+  : 'normal';
+const spawnPulsesEnabled = testMode !== 'no-spawn' && testMode !== 'no-pulses';
+const mergePulsesEnabled = testMode !== 'no-pulses';
+
 const storage = {
   get(key) { try { return localStorage.getItem(key); } catch { return null; } },
-  set(key, value) { try { localStorage.setItem(key, value); } catch {} }
+  set(key, value) {
+    if (testMode === 'no-storage' && key === '2048-best') return;
+    try { localStorage.setItem(key, value); } catch {}
+  }
 };
 
 const game = new Game(storage);
@@ -47,7 +57,7 @@ function commitMove(move, { interrupted = false } = {}) {
 
   renderer.syncTileValues(game.tiles);
 
-  if (!interrupted) {
+  if (!interrupted && mergePulsesEnabled) {
     for (const id of result.mergedIds) {
       const el = renderer.getTileEl(id);
       if (el) renderer.playTilePulse(el, 'merge');
@@ -57,7 +67,7 @@ function commitMove(move, { interrupted = false } = {}) {
   const spawned = game.makeRandomTile(game.tiles);
   if (spawned) {
     game.tiles.push(spawned);
-    renderer.tileElement(spawned, { animateNew: !interrupted });
+    renderer.tileElement(spawned, { animateNew: !interrupted && spawnPulsesEnabled });
   }
 
   const state = game.evaluateState();
@@ -117,7 +127,7 @@ function resetGame() {
   renderer.clearTiles();
   const first = game.makeRandomTile(game.tiles); if (first) game.tiles.push(first);
   const second = game.makeRandomTile(game.tiles); if (second) game.tiles.push(second);
-  renderer.renderAll(game.tiles);
+  renderer.renderAll(game.tiles, { animateNew: spawnPulsesEnabled });
   updateScore();
 }
 
@@ -174,12 +184,22 @@ window.__2048Debug = {
   finishAnimation() {
     interruptActiveMove();
   },
+  settleAnimation() {
+    if (activeMove) commitMove(activeMove);
+  },
   getAnimationState() {
     return {
       active: Boolean(activeMove),
       moveSerial,
       interruptedMoves,
       moveMs: MOVE_MS
+    };
+  },
+  getDiagnostics() {
+    return {
+      testMode,
+      domTileNodes: document.querySelectorAll('.tile').length,
+      trackedTileNodes: renderer.tileElements.size
     };
   },
   setTrackpadFactor(factor) {

@@ -99,9 +99,9 @@ export class Renderer {
     this.tileElements.clear();
   }
 
-  renderAll(tiles) {
+  renderAll(tiles, { animateNew = true } = {}) {
     this.clearTiles();
-    for (const tile of tiles) this.tileElement(tile);
+    for (const tile of tiles) this.tileElement(tile, { animateNew });
   }
 
   updateScore(score) {
