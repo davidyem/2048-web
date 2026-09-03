@@ -1,8 +1,6 @@
 import { Game, SIZE } from './game.js';
 import { Input } from './input.js';
-import { MOVE_MS, MOVE_SETTLE_MS, Renderer } from './renderer.js';
-
-document.documentElement.style.setProperty('--move-ms', `${MOVE_MS}ms`);
+import { MOVE_MS, Renderer } from './renderer.js';
 
 const BEST_SCORE_KEY = '2048-best';
 const BEST_SAVE_DELAY_MS = 1500;
@@ -74,7 +72,6 @@ function updateScore() {
 function commitMove(move, { interrupted = false } = {}) {
   if (!move || move.done) return;
   move.done = true;
-  clearTimeout(move.timer);
   if (activeMove === move) activeMove = null;
   if (move.session !== game.gameSession) return;
 
@@ -115,14 +112,13 @@ function commitMove(move, { interrupted = false } = {}) {
 function cancelActiveMove() {
   if (!activeMove) return;
   activeMove.done = true;
-  clearTimeout(activeMove.timer);
   activeMove = null;
 }
 
 function interruptActiveMove() {
   if (!activeMove) return;
 
-  // Finish the current transform transitions before committing so rapid
+  // Finish the current movement animations before committing so rapid
   // input always starts from the latest visual target without a move queue.
   renderer.finishTileMoves(game.tiles, activeMove.result.motions);
   renderer.cancelTilePulses();
@@ -142,16 +138,13 @@ function performMove(direction) {
     id: ++moveSerial,
     session: game.gameSession,
     result,
-    timer: 0,
     done: false
   };
   activeMove = move;
 
-  renderer.moveTiles(game.tiles, result.motions);
-
-  move.timer = window.setTimeout(() => {
-    commitMove(move);
-  }, MOVE_SETTLE_MS);
+  renderer.moveTiles(game.tiles, result.motions).then(completed => {
+    if (completed) commitMove(move);
+  });
 }
 
 function resetGame() {

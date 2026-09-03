@@ -189,7 +189,6 @@
           0
         )
         scale(var(--scale));
-      transition: transform var(--move-ms) ease-in-out;
       will-change: transform;
       backface-visibility: hidden;
       -webkit-backface-visibility: hidden;
@@ -443,6 +442,5 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      :root { --move-ms: 1ms; }
-      .tile, .overlay, .overlay-card, .new-game, .trackpad-setup, .trackpad-setup-card, .trackpad-swipe-demo::after { animation: none !important; transition-duration: 1ms !important; }
+      .overlay, .overlay-card, .new-game, .trackpad-setup, .trackpad-setup-card, .trackpad-swipe-demo::after { animation: none !important; transition-duration: 1ms !important; }
     }

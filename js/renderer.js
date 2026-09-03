@@ -1,7 +1,6 @@
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 export const MOVE_MS = REDUCED_MOTION ? 1 : 110;
-export const MOVE_SETTLE_MS = MOVE_MS + 18;
 
 export class Renderer {
   constructor() {
@@ -69,13 +68,24 @@ export class Renderer {
     for (const tile of tiles) {
       const target = motions.get(tile.id);
       if (!target || (target.row === tile.row && target.col === tile.col)) continue;
-      const el = this.getTileEl(tile.id);
-      if (!el) continue;
-      for (const animation of el.getAnimations()) {
-        animation.finish();
-        animation.cancel();
-      }
+      const entry = this.activeTiles.get(tile.id);
+      if (entry) this.finishTileMovement(entry);
     }
+  }
+
+  finishTileMovement(entry) {
+    const animation = entry.movement;
+    if (!animation) return;
+    entry.movement = null;
+    animation.finish();
+    animation.cancel();
+  }
+
+  cancelTileMovement(entry) {
+    const animation = entry.movement;
+    if (!animation) return;
+    entry.movement = null;
+    animation.cancel();
   }
 
   tileElement(tile, { animateNew = true } = {}) {
@@ -101,17 +111,15 @@ export class Renderer {
     const el = document.createElement('div');
     const inner = document.createElement('div');
     el.appendChild(inner);
-    const entry = { el, inner, pulse: null };
+    const entry = { el, inner, movement: null, pulse: null };
     this.entryByElement.set(el, entry);
     this.createdTileElements += 1;
     return entry;
   }
 
-  recycleTileEntry(entry, cancelMovement = false) {
+  recycleTileEntry(entry) {
+    this.cancelTileMovement(entry);
     this.cancelTilePulse(entry);
-    if (cancelMovement) {
-      for (const animation of entry.el.getAnimations()) animation.cancel();
-    }
     entry.el.remove();
     entry.el.className = 'tile';
     entry.inner.className = 'tile-inner';
@@ -135,9 +143,7 @@ export class Renderer {
   }
 
   clearTiles() {
-    for (const entry of this.activeTiles.values()) {
-      this.recycleTileEntry(entry, true);
-    }
+    for (const entry of this.activeTiles.values()) this.recycleTileEntry(entry);
     this.activeTiles.clear();
   }
 
@@ -159,12 +165,42 @@ export class Renderer {
     el.style.setProperty('--col', col);
   }
 
+  tileTransform(row, col) {
+    return `translate3d(calc(${col} * (100% + var(--gap))), calc(${row} * (100% + var(--gap))), 0) scale(var(--scale))`;
+  }
+
+  animateTileMovement(entry, from, to) {
+    this.cancelTileMovement(entry);
+    this.setTilePosition(entry.el, to.row, to.col);
+    const animation = entry.el.animate([
+      { transform: this.tileTransform(from.row, from.col) },
+      { transform: this.tileTransform(to.row, to.col) }
+    ], {
+      duration: MOVE_MS,
+      easing: 'ease-in-out'
+    });
+    entry.movement = animation;
+    return animation.finished.then(
+      () => true,
+      () => false
+    ).finally(() => {
+      if (entry.movement === animation) entry.movement = null;
+    });
+  }
+
   moveTiles(tiles, motions) {
+    const movements = [];
     for (const tile of tiles) {
       const target = motions.get(tile.id);
-      const el = this.getTileEl(tile.id);
-      if (target && el) this.setTilePosition(el, target.row, target.col);
+      const entry = this.activeTiles.get(tile.id);
+      if (!target || !entry) continue;
+      if (target.row === tile.row && target.col === tile.col) {
+        this.setTilePosition(entry.el, target.row, target.col);
+        continue;
+      }
+      movements.push(this.animateTileMovement(entry, tile, target));
     }
+    return Promise.all(movements).then(results => results.every(Boolean));
   }
 
   syncTileValues(tiles) {
@@ -180,6 +216,8 @@ export class Renderer {
   }
 
   getStats() {
+    const activeMovementAnimations = [...this.activeTiles.values()]
+      .reduce((count, entry) => count + Number(Boolean(entry.movement)), 0);
     const activePulseAnimations = [...this.activeTiles.values()]
       .reduce((count, entry) => count + Number(Boolean(entry.pulse)), 0);
     return {
@@ -187,6 +225,7 @@ export class Renderer {
       activeTileElements: this.activeTiles.size,
       pooledTileElements: this.tilePool.length,
       retainedTileElements: this.activeTiles.size + this.tilePool.length,
+      activeMovementAnimations,
       activePulseAnimations
     };
   }
