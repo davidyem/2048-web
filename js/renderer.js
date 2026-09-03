@@ -15,15 +15,17 @@ export class Renderer {
     this.continueBtn = document.getElementById('continueBtn');
     this.newGameBtn = document.getElementById('newGame');
     this.retryBtn = document.getElementById('retryBtn');
-    this.tileElements = new Map();
+    this.activeTiles = new Map();
+    this.tilePool = [];
+    this.entryByElement = new WeakMap();
+    this.createdTileElements = 0;
   }
 
   playTilePulse(el, kind) {
     if (REDUCED_MOTION || typeof el.animate !== 'function') return;
-    const inner = el.querySelector('.tile-inner');
-    if (!inner) return;
-
-    for (const animation of inner.getAnimations()) animation.cancel();
+    const entry = this.entryByElement.get(el);
+    if (!entry) return;
+    this.cancelTilePulse(entry);
     const keyframes = kind === 'merge'
       ? [
           { transform: 'translateZ(0) scale(1)' },
@@ -35,19 +37,32 @@ export class Renderer {
           { transform: 'translateZ(0) scale(1)', opacity: 1 }
         ];
 
-    inner.animate(keyframes, {
+    const animation = entry.inner.animate(keyframes, {
       duration: kind === 'merge' ? 104 : 92,
       easing: 'cubic-bezier(.2,.72,.24,1)',
       fill: 'none'
     });
+    entry.pulse = animation;
+    const clearReference = () => {
+      if (entry.pulse === animation) entry.pulse = null;
+      animation.onfinish = null;
+      animation.oncancel = null;
+    };
+    animation.onfinish = clearReference;
+    animation.oncancel = clearReference;
+  }
+
+  cancelTilePulse(entry) {
+    const animation = entry.pulse;
+    if (!animation) return;
+    entry.pulse = null;
+    animation.onfinish = null;
+    animation.oncancel = null;
+    animation.cancel();
   }
 
   cancelTilePulses() {
-    for (const el of this.tileElements.values()) {
-      const inner = el.querySelector('.tile-inner');
-      if (!inner) continue;
-      for (const animation of inner.getAnimations()) animation.cancel();
-    }
+    for (const entry of this.activeTiles.values()) this.cancelTilePulse(entry);
   }
 
   finishTileMoves(tiles, motions) {
@@ -64,19 +79,17 @@ export class Renderer {
   }
 
   tileElement(tile, { animateNew = true } = {}) {
-    const el = document.createElement('div');
+    const entry = this.tilePool.pop() || this.createTileEntry();
+    const { el, inner } = entry;
     el.className = 'tile';
+    inner.className = 'tile-inner';
     el.dataset.id = tile.id;
     el.dataset.value = tile.value;
     el.style.setProperty('--row', tile.row);
     el.style.setProperty('--col', tile.col);
-
-    const inner = document.createElement('div');
-    inner.className = 'tile-inner';
     inner.textContent = tile.value;
-    el.appendChild(inner);
     this.tileLayer.appendChild(el);
-    this.tileElements.set(tile.id, el);
+    this.activeTiles.set(tile.id, entry);
 
     const shouldAnimate = tile.isNew && animateNew;
     tile.isNew = false;
@@ -84,24 +97,53 @@ export class Renderer {
     return el;
   }
 
+  createTileEntry() {
+    const el = document.createElement('div');
+    const inner = document.createElement('div');
+    el.appendChild(inner);
+    const entry = { el, inner, pulse: null };
+    this.entryByElement.set(el, entry);
+    this.createdTileElements += 1;
+    return entry;
+  }
+
+  recycleTileEntry(entry, cancelMovement = false) {
+    this.cancelTilePulse(entry);
+    if (cancelMovement) {
+      for (const animation of entry.el.getAnimations()) animation.cancel();
+    }
+    entry.el.remove();
+    entry.el.className = 'tile';
+    entry.inner.className = 'tile-inner';
+    delete entry.el.dataset.id;
+    delete entry.el.dataset.value;
+    entry.el.removeAttribute('style');
+    entry.inner.removeAttribute('style');
+    entry.inner.textContent = '';
+    this.tilePool.push(entry);
+  }
+
   getTileEl(id) {
-    return this.tileElements.get(id) || null;
+    return this.activeTiles.get(id)?.el || null;
   }
 
   removeTileEl(id) {
-    const el = this.tileElements.get(id);
-    if (el) el.remove();
-    this.tileElements.delete(id);
+    const entry = this.activeTiles.get(id);
+    if (!entry) return;
+    this.activeTiles.delete(id);
+    this.recycleTileEntry(entry);
   }
 
   clearTiles() {
-    this.tileLayer.textContent = '';
-    this.tileElements.clear();
+    for (const entry of this.activeTiles.values()) {
+      this.recycleTileEntry(entry, true);
+    }
+    this.activeTiles.clear();
   }
 
-  renderAll(tiles, { animateNew = true } = {}) {
+  renderAll(tiles) {
     this.clearTiles();
-    for (const tile of tiles) this.tileElement(tile, { animateNew });
+    for (const tile of tiles) this.tileElement(tile);
   }
 
   updateScore(score) {
@@ -127,15 +169,26 @@ export class Renderer {
 
   syncTileValues(tiles) {
     for (const tile of tiles) {
-      const el = this.getTileEl(tile.id);
-      if (!el) continue;
-      const oldValue = Number(el.dataset.value);
+      const entry = this.activeTiles.get(tile.id);
+      if (!entry) continue;
+      const oldValue = Number(entry.el.dataset.value);
       if (oldValue !== tile.value) {
-        el.dataset.value = tile.value;
-        const inner = el.querySelector('.tile-inner');
-        if (inner) inner.textContent = tile.value;
+        entry.el.dataset.value = tile.value;
+        entry.inner.textContent = tile.value;
       }
     }
+  }
+
+  getStats() {
+    const activePulseAnimations = [...this.activeTiles.values()]
+      .reduce((count, entry) => count + Number(Boolean(entry.pulse)), 0);
+    return {
+      createdTileElements: this.createdTileElements,
+      activeTileElements: this.activeTiles.size,
+      pooledTileElements: this.tilePool.length,
+      retainedTileElements: this.activeTiles.size + this.tilePool.length,
+      activePulseAnimations
+    };
   }
 
   showState(state) {

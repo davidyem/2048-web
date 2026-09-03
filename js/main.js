@@ -4,20 +4,55 @@ import { MOVE_MS, MOVE_SETTLE_MS, Renderer } from './renderer.js';
 
 document.documentElement.style.setProperty('--move-ms', `${MOVE_MS}ms`);
 
-const requestedTestMode = new URLSearchParams(window.location.search).get('test');
-const testMode = ['normal', 'no-spawn', 'no-pulses', 'no-storage'].includes(requestedTestMode)
-  ? requestedTestMode
-  : 'normal';
-const spawnPulsesEnabled = testMode !== 'no-spawn' && testMode !== 'no-pulses';
-const mergePulsesEnabled = testMode !== 'no-pulses';
+const BEST_SCORE_KEY = '2048-best';
+const BEST_SAVE_DELAY_MS = 1500;
+let pendingBestValue = null;
+let persistedBestValue;
+let bestSaveTimer = 0;
+
+function flushBestScore() {
+  clearTimeout(bestSaveTimer);
+  bestSaveTimer = 0;
+  if (pendingBestValue === null) return;
+
+  const value = pendingBestValue;
+  pendingBestValue = null;
+  if (value === persistedBestValue) return;
+
+  try {
+    localStorage.setItem(BEST_SCORE_KEY, value);
+    persistedBestValue = value;
+  } catch {}
+}
 
 const storage = {
-  get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+  get(key) {
+    try {
+      const value = localStorage.getItem(key);
+      if (key === BEST_SCORE_KEY) persistedBestValue = value;
+      return value;
+    } catch {
+      return null;
+    }
+  },
   set(key, value) {
-    if (testMode === 'no-storage' && key === '2048-best') return;
-    try { localStorage.setItem(key, value); } catch {}
+    const serialized = String(value);
+    if (key !== BEST_SCORE_KEY) {
+      try { localStorage.setItem(key, serialized); } catch {}
+      return;
+    }
+    if (serialized === pendingBestValue
+      || (pendingBestValue === null && serialized === persistedBestValue)) return;
+    pendingBestValue = serialized;
+    clearTimeout(bestSaveTimer);
+    bestSaveTimer = window.setTimeout(flushBestScore, BEST_SAVE_DELAY_MS);
   }
 };
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) flushBestScore();
+});
+window.addEventListener('pagehide', flushBestScore);
 
 const game = new Game(storage);
 const renderer = new Renderer();
@@ -32,7 +67,7 @@ function updateScore() {
   if (game.score > game.best) {
     game.best = game.score;
     renderer.updateBest(game.best);
-    storage.set('2048-best', String(game.best));
+    storage.set(BEST_SCORE_KEY, game.best);
   }
 }
 
@@ -57,7 +92,7 @@ function commitMove(move, { interrupted = false } = {}) {
 
   renderer.syncTileValues(game.tiles);
 
-  if (!interrupted && mergePulsesEnabled) {
+  if (!interrupted) {
     for (const id of result.mergedIds) {
       const el = renderer.getTileEl(id);
       if (el) renderer.playTilePulse(el, 'merge');
@@ -67,11 +102,14 @@ function commitMove(move, { interrupted = false } = {}) {
   const spawned = game.makeRandomTile(game.tiles);
   if (spawned) {
     game.tiles.push(spawned);
-    renderer.tileElement(spawned, { animateNew: !interrupted && spawnPulsesEnabled });
+    renderer.tileElement(spawned, { animateNew: !interrupted });
   }
 
   const state = game.evaluateState();
-  if (state) renderer.showState(state);
+  if (state) {
+    renderer.showState(state);
+    if (!state.showContinue) flushBestScore();
+  }
 }
 
 function cancelActiveMove() {
@@ -117,6 +155,7 @@ function performMove(direction) {
 }
 
 function resetGame() {
+  flushBestScore();
   game.gameSession += 1;
   cancelActiveMove();
   game.score = 0;
@@ -127,7 +166,7 @@ function resetGame() {
   renderer.clearTiles();
   const first = game.makeRandomTile(game.tiles); if (first) game.tiles.push(first);
   const second = game.makeRandomTile(game.tiles); if (second) game.tiles.push(second);
-  renderer.renderAll(game.tiles, { animateNew: spawnPulsesEnabled });
+  renderer.renderAll(game.tiles);
   updateScore();
 }
 
@@ -184,9 +223,6 @@ window.__2048Debug = {
   finishAnimation() {
     interruptActiveMove();
   },
-  settleAnimation() {
-    if (activeMove) commitMove(activeMove);
-  },
   getAnimationState() {
     return {
       active: Boolean(activeMove),
@@ -195,12 +231,8 @@ window.__2048Debug = {
       moveMs: MOVE_MS
     };
   },
-  getDiagnostics() {
-    return {
-      testMode,
-      domTileNodes: document.querySelectorAll('.tile').length,
-      trackedTileNodes: renderer.tileElements.size
-    };
+  getRendererState() {
+    return renderer.getStats();
   },
   setTrackpadFactor(factor) {
     input.setTrackpadFactor(factor);
