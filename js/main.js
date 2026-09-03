@@ -4,9 +4,15 @@ import { MOVE_MS, Renderer } from './renderer.js';
 
 const BEST_SCORE_KEY = '2048-best';
 const BEST_SAVE_DELAY_MS = 1500;
+const GAME_STATE_KEY = '2048-game-state-v1';
+const GAME_STATE_VERSION = 1;
+const GAME_STATE_SAVE_DELAY_MS = 750;
 let pendingBestValue = null;
 let persistedBestValue;
 let bestSaveTimer = 0;
+let pendingGameState = null;
+let persistedGameState = null;
+let gameStateSaveTimer = 0;
 
 function flushBestScore() {
   clearTimeout(bestSaveTimer);
@@ -47,10 +53,97 @@ const storage = {
   }
 };
 
+function isValidGameState(state) {
+  if (!state || state.version !== GAME_STATE_VERSION
+    || !Array.isArray(state.tiles) || state.tiles.length < 1 || state.tiles.length > SIZE * SIZE
+    || !Number.isSafeInteger(state.score) || state.score < 0
+    || typeof state.wonShown !== 'boolean' || typeof state.keepPlaying !== 'boolean'
+    || (state.keepPlaying && !state.wonShown)) return false;
+
+  const occupied = new Set();
+  for (const tile of state.tiles) {
+    if (!tile || !Number.isSafeInteger(tile.value) || tile.value < 2
+      || !Number.isInteger(Math.log2(tile.value))
+      || !Number.isInteger(tile.row) || tile.row < 0 || tile.row >= SIZE
+      || !Number.isInteger(tile.col) || tile.col < 0 || tile.col >= SIZE) return false;
+    const cell = `${tile.row},${tile.col}`;
+    if (occupied.has(cell)) return false;
+    occupied.add(cell);
+  }
+  return true;
+}
+
+function readGameState() {
+  let serialized;
+  try {
+    serialized = localStorage.getItem(GAME_STATE_KEY);
+    if (serialized === null) return null;
+    const state = JSON.parse(serialized);
+    if (!isValidGameState(state)) throw new TypeError('Invalid saved game state');
+    persistedGameState = serialized;
+    return state;
+  } catch {
+    try { localStorage.removeItem(GAME_STATE_KEY); } catch {}
+    persistedGameState = null;
+    return null;
+  }
+}
+
+function serializeGameState() {
+  const tiles = game.tiles
+    .map(({ value, row, col }) => ({ value, row, col }))
+    .sort((a, b) => a.row - b.row || a.col - b.col);
+  return JSON.stringify({
+    version: GAME_STATE_VERSION,
+    tiles,
+    score: game.score,
+    wonShown: game.wonShown,
+    keepPlaying: game.keepPlaying
+  });
+}
+
+function flushGameState() {
+  clearTimeout(gameStateSaveTimer);
+  gameStateSaveTimer = 0;
+  if (pendingGameState === null) return;
+
+  const serialized = pendingGameState;
+  pendingGameState = null;
+  if (serialized === persistedGameState) return;
+
+  try {
+    localStorage.setItem(GAME_STATE_KEY, serialized);
+    persistedGameState = serialized;
+  } catch {}
+}
+
+function scheduleGameStateSave() {
+  const serialized = serializeGameState();
+  if (serialized === pendingGameState
+    || (pendingGameState === null && serialized === persistedGameState)) return;
+  pendingGameState = serialized;
+  clearTimeout(gameStateSaveTimer);
+  gameStateSaveTimer = window.setTimeout(flushGameState, GAME_STATE_SAVE_DELAY_MS);
+}
+
+function clearGameState() {
+  clearTimeout(gameStateSaveTimer);
+  gameStateSaveTimer = 0;
+  pendingGameState = null;
+  try { localStorage.removeItem(GAME_STATE_KEY); } catch {}
+  persistedGameState = null;
+}
+
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) flushBestScore();
+  if (document.hidden) {
+    flushBestScore();
+    flushGameState();
+  }
 });
-window.addEventListener('pagehide', flushBestScore);
+window.addEventListener('pagehide', () => {
+  flushBestScore();
+  flushGameState();
+});
 
 const game = new Game(storage);
 const renderer = new Renderer();
@@ -67,6 +160,43 @@ function updateScore() {
     renderer.updateBest(game.best);
     storage.set(BEST_SCORE_KEY, game.best);
   }
+}
+
+function restoreGameState() {
+  const state = readGameState();
+  if (!state) return false;
+
+  game.gameSession += 1;
+  game.nextId = 1;
+  game.tiles = state.tiles.map(tile => ({
+    id: game.nextId++,
+    value: tile.value,
+    row: tile.row,
+    col: tile.col,
+    isNew: false
+  }));
+  game.score = state.score;
+  game.wonShown = state.wonShown;
+  game.keepPlaying = state.keepPlaying;
+
+  if (!game.canMove()) {
+    clearGameState();
+    game.tiles = [];
+    return false;
+  }
+
+  renderer.hideOverlay();
+  renderer.renderAll(game.tiles);
+  updateScore();
+
+  if (game.wonShown && !game.keepPlaying && game.tiles.some(tile => tile.value >= 2048)) {
+    renderer.showState({
+      title: '2048!',
+      text: 'You reached 2048. Keep going?',
+      showContinue: true
+    });
+  }
+  return true;
 }
 
 function commitMove(move, { interrupted = false } = {}) {
@@ -105,8 +235,13 @@ function commitMove(move, { interrupted = false } = {}) {
   const state = game.evaluateState();
   if (state) {
     renderer.showState(state);
-    if (!state.showContinue) flushBestScore();
+    if (!state.showContinue) {
+      flushBestScore();
+      clearGameState();
+      return;
+    }
   }
+  scheduleGameStateSave();
 }
 
 function cancelActiveMove() {
@@ -149,6 +284,7 @@ function performMove(direction) {
 
 function resetGame() {
   flushBestScore();
+  clearGameState();
   game.gameSession += 1;
   cancelActiveMove();
   game.score = 0;
@@ -161,6 +297,8 @@ function resetGame() {
   const second = game.makeRandomTile(game.tiles); if (second) game.tiles.push(second);
   renderer.renderAll(game.tiles);
   updateScore();
+  scheduleGameStateSave();
+  flushGameState();
 }
 
 const input = new Input(storage, performMove);
@@ -246,9 +384,10 @@ renderer.retryBtn.addEventListener('click', resetGame);
 renderer.continueBtn.addEventListener('click', () => {
   game.keepPlaying = true;
   renderer.hideOverlay();
+  scheduleGameStateSave();
 });
 
-resetGame();
+if (!restoreGameState()) resetGame();
 
 if (input.likelyMacDesktop && input.trackpadFactor === null) {
   requestAnimationFrame(() => input.showTrackpadSetup());
