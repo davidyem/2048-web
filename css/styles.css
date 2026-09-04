@@ -174,21 +174,12 @@
     }
 
     .tile {
-      --row: 0;
-      --col: 0;
-      --scale: 1;
       position: absolute;
       top: var(--gap);
       left: var(--gap);
       width: calc((100% - (5 * var(--gap))) / 4);
       height: calc((100% - (5 * var(--gap))) / 4);
-      transform:
-        translate3d(
-          calc(var(--col) * (100% + var(--gap))),
-          calc(var(--row) * (100% + var(--gap))),
-          0
-        )
-        scale(var(--scale));
+      transform: translate3d(0, 0, 0);
       will-change: transform;
       backface-visibility: hidden;
       -webkit-backface-visibility: hidden;

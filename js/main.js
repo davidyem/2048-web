@@ -2,6 +2,16 @@ import { Game, SIZE } from './game.js';
 import { Input } from './input.js';
 import { MOVE_MS, Renderer } from './renderer.js';
 
+let performanceMonitor = null;
+if (new URLSearchParams(window.location.search).get('perf') === '1') {
+  try {
+    const { createPerformanceMonitor } = await import('./perf.js');
+    performanceMonitor = createPerformanceMonitor();
+  } catch (error) {
+    console.error('Performance monitor could not start.', error);
+  }
+}
+
 const BEST_SCORE_KEY = '2048-best';
 const BEST_SAVE_DELAY_MS = 1500;
 const GAME_STATE_KEY = '2048-game-state-v1';
@@ -146,9 +156,10 @@ window.addEventListener('pagehide', () => {
 });
 
 const game = new Game(storage);
-const renderer = new Renderer();
+const renderer = new Renderer(performanceMonitor);
 let activeMove = null;
 let pendingDirection = null;
+let pendingInputEvent = null;
 let moveSerial = 0;
 let interruptedMoves = 0;
 
@@ -189,6 +200,7 @@ function restoreGameState() {
   renderer.hideOverlay();
   renderer.renderAll(game.tiles);
   updateScore();
+  performanceMonitor?.recordLifecycle('restore');
 
   if (game.wonShown && !game.keepPlaying && game.tiles.some(tile => tile.value >= 2048)) {
     renderer.showState({
@@ -203,8 +215,10 @@ function restoreGameState() {
 function runPendingMove() {
   if (!pendingDirection) return;
   const direction = pendingDirection;
+  const inputEvent = pendingInputEvent;
   pendingDirection = null;
-  performMove(direction);
+  pendingInputEvent = null;
+  performMove(direction, inputEvent);
 }
 
 function commitMove(move, { interrupted = false } = {}) {
@@ -240,11 +254,21 @@ function commitMove(move, { interrupted = false } = {}) {
     renderer.tileElement(spawned, { animateNew: !interrupted });
   }
 
+  performanceMonitor?.recordCommit({
+    id: move.id,
+    merge: result.mergedIds.length > 0,
+    mergeCount: result.mergedIds.length,
+    spawn: Boolean(spawned),
+    interrupted
+  });
+
   const state = game.evaluateState();
   if (state) {
     renderer.showState(state);
     if (!state.showContinue) {
       pendingDirection = null;
+      pendingInputEvent = null;
+      performanceMonitor?.recordLifecycle('game-over');
       flushBestScore();
       clearGameState();
       return;
@@ -256,6 +280,7 @@ function commitMove(move, { interrupted = false } = {}) {
 
 function cancelActiveMove() {
   pendingDirection = null;
+  pendingInputEvent = null;
   if (!activeMove) return;
   activeMove.done = true;
   activeMove = null;
@@ -265,22 +290,30 @@ function interruptActiveMove() {
   if (!activeMove) return;
 
   pendingDirection = null;
+  pendingInputEvent = null;
   renderer.finishTileMoves(game.tiles, activeMove.result.motions);
   renderer.cancelTilePulses();
   commitMove(activeMove, { interrupted: true });
 }
 
-function performMove(direction) {
+function performMove(direction, deferredInputEvent = null) {
+  const inputEvent = deferredInputEvent
+    || performanceMonitor?.recordInput(direction, Boolean(activeMove));
   // Keep only the latest direction while a move is active. It runs as soon
   // as that move commits, so rapid input cannot build up a move backlog.
   if (activeMove) {
     pendingDirection = direction;
+    pendingInputEvent = inputEvent;
+    performanceMonitor?.recordPending(direction);
     return;
   }
   if (renderer.isOverlayShown() && !game.keepPlaying) return;
 
   const result = game.calculateMove(direction);
-  if (!result.changed) return;
+  if (!result.changed) {
+    performanceMonitor?.recordInvalidMove(inputEvent);
+    return;
+  }
 
   const move = {
     id: ++moveSerial,
@@ -290,12 +323,26 @@ function performMove(direction) {
   };
   activeMove = move;
 
+  if (performanceMonitor) {
+    const metrics = renderer.getMovementMetrics(game.tiles, result.motions);
+    performanceMonitor.recordMoveStart({
+      id: move.id,
+      input: inputEvent,
+      direction,
+      ...metrics,
+      merge: result.mergedIds.length > 0,
+      spawn: true
+    });
+  }
+
   renderer.moveTiles(game.tiles, result.motions).then(completed => {
+    performanceMonitor?.recordMoveEnd(move.id, completed);
     if (completed) commitMove(move);
   });
 }
 
 function resetGame() {
+  performanceMonitor?.recordLifecycle('new-game');
   flushBestScore();
   clearGameState();
   game.gameSession += 1;

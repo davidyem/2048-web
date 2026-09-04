@@ -6,8 +6,9 @@ const MOVE_STEP_MS = 20;
 const MOVE_MAX_MS = 145;
 
 export class Renderer {
-  constructor() {
+  constructor(performanceMonitor = null) {
     this.boardWrap = document.getElementById('boardWrap');
+    this.grid = this.boardWrap.querySelector('.grid');
     this.tileLayer = document.getElementById('tileLayer');
     this.scoreEl = document.getElementById('score');
     this.bestEl = document.getElementById('best');
@@ -21,6 +22,12 @@ export class Renderer {
     this.tilePool = [];
     this.entryByElement = new WeakMap();
     this.createdTileElements = 0;
+    this.performanceMonitor = performanceMonitor;
+    this.cellStep = 0;
+    this.geometryUpdates = 0;
+    this.refreshGeometry();
+    this.resizeObserver = new ResizeObserver(() => this.refreshGeometry());
+    this.resizeObserver.observe(this.boardWrap);
   }
 
   playTilePulse(el, kind) {
@@ -45,10 +52,12 @@ export class Renderer {
       fill: 'none'
     });
     entry.pulse = animation;
+    this.performanceMonitor?.recordPulseStart(kind, el.dataset.id);
     const clearReference = () => {
       if (entry.pulse === animation) entry.pulse = null;
       animation.onfinish = null;
       animation.oncancel = null;
+      this.performanceMonitor?.recordPulseEnd(kind, el.dataset.id);
     };
     animation.onfinish = clearReference;
     animation.oncancel = clearReference;
@@ -92,20 +101,25 @@ export class Renderer {
   }
 
   tileElement(tile, { animateNew = true } = {}) {
+    const reused = this.tilePool.length > 0;
     const entry = this.tilePool.pop() || this.createTileEntry();
     const { el, inner } = entry;
     el.className = 'tile';
     inner.className = 'tile-inner';
     el.dataset.id = tile.id;
     el.dataset.value = tile.value;
-    el.style.setProperty('--row', tile.row);
-    el.style.setProperty('--col', tile.col);
+    this.setTilePosition(entry, tile.row, tile.col);
     inner.textContent = tile.value;
     this.tileLayer.appendChild(el);
     this.activeTiles.set(tile.id, entry);
 
     const shouldAnimate = tile.isNew && animateNew;
     tile.isNew = false;
+    this.performanceMonitor?.recordTileActivation({
+      id: tile.id,
+      reused,
+      animated: shouldAnimate
+    });
     if (shouldAnimate) this.playTilePulse(el, 'new');
     return el;
   }
@@ -114,9 +128,17 @@ export class Renderer {
     const el = document.createElement('div');
     const inner = document.createElement('div');
     el.appendChild(inner);
-    const entry = { el, inner, movement: null, pulse: null };
+    const entry = {
+      el,
+      inner,
+      movement: null,
+      pulse: null,
+      row: 0,
+      col: 0
+    };
     this.entryByElement.set(el, entry);
     this.createdTileElements += 1;
+    this.performanceMonitor?.recordTileCreation(this.createdTileElements);
     return entry;
   }
 
@@ -131,7 +153,10 @@ export class Renderer {
     entry.el.removeAttribute('style');
     entry.inner.removeAttribute('style');
     entry.inner.textContent = '';
+    entry.row = 0;
+    entry.col = 0;
     this.tilePool.push(entry);
+    this.performanceMonitor?.recordTileRecycle(this.tilePool.length);
   }
 
   getTileEl(id) {
@@ -163,13 +188,29 @@ export class Renderer {
     this.bestEl.textContent = String(best);
   }
 
-  setTilePosition(el, row, col) {
-    el.style.setProperty('--row', row);
-    el.style.setProperty('--col', col);
+  refreshGeometry() {
+    const cellWidth = this.grid.firstElementChild.getBoundingClientRect().width;
+    const gap = Number.parseFloat(getComputedStyle(this.grid).columnGap) || 0;
+    const nextCellStep = cellWidth + gap;
+    if (!Number.isFinite(nextCellStep) || nextCellStep <= 0
+      || Math.abs(nextCellStep - this.cellStep) < .001) return;
+
+    this.cellStep = nextCellStep;
+    this.geometryUpdates += 1;
+    for (const entry of this.activeTiles.values()) {
+      this.setTilePosition(entry, entry.row, entry.col);
+    }
+  }
+
+  setTilePosition(entry, row, col) {
+    entry.row = row;
+    entry.col = col;
+    const transform = this.tileTransform(row, col);
+    if (entry.el.style.transform !== transform) entry.el.style.transform = transform;
   }
 
   tileTransform(row, col) {
-    return `translate3d(calc(${col} * (100% + var(--gap))), calc(${row} * (100% + var(--gap))), 0) scale(var(--scale))`;
+    return `translate3d(${col * this.cellStep}px, ${row * this.cellStep}px, 0)`;
   }
 
   movementDuration(from, to) {
@@ -180,21 +221,19 @@ export class Renderer {
 
   animateTileMovement(entry, from, to) {
     this.cancelTileMovement(entry);
-    this.setTilePosition(entry.el, to.row, to.col);
+    const fromTransform = this.tileTransform(from.row, from.col);
+    const toTransform = this.tileTransform(to.row, to.col);
+    this.setTilePosition(entry, to.row, to.col);
+    const duration = this.movementDuration(from, to);
     const animation = entry.el.animate([
-      { transform: this.tileTransform(from.row, from.col) },
-      { transform: this.tileTransform(to.row, to.col) }
+      { transform: fromTransform },
+      { transform: toTransform }
     ], {
-      duration: this.movementDuration(from, to),
+      duration,
       easing: 'ease-in-out'
     });
     entry.movement = animation;
-    return animation.finished.then(
-      () => true,
-      () => false
-    ).finally(() => {
-      if (entry.movement === animation) entry.movement = null;
-    });
+    return { entry, animation };
   }
 
   moveTiles(tiles, motions) {
@@ -204,12 +243,38 @@ export class Renderer {
       const entry = this.activeTiles.get(tile.id);
       if (!target || !entry) continue;
       if (target.row === tile.row && target.col === tile.col) {
-        this.setTilePosition(entry.el, target.row, target.col);
+        this.setTilePosition(entry, target.row, target.col);
         continue;
       }
       movements.push(this.animateTileMovement(entry, tile, target));
     }
-    return Promise.all(movements).then(results => results.every(Boolean));
+    if (!movements.length) return Promise.resolve(true);
+
+    const completions = movements.map(({ animation }) => animation.finished.then(
+      () => true,
+      () => false
+    ));
+    return Promise.all(completions).then(results => results.every(Boolean)).finally(() => {
+      for (const { entry, animation } of movements) {
+        if (entry.movement === animation) entry.movement = null;
+      }
+    });
+  }
+
+  getMovementMetrics(tiles, motions) {
+    let movingTiles = 0;
+    let maxDistance = 0;
+    let maxDuration = 0;
+    for (const tile of tiles) {
+      const target = motions.get(tile.id);
+      if (!target) continue;
+      const distance = Math.abs(target.row - tile.row) + Math.abs(target.col - tile.col);
+      if (!distance) continue;
+      movingTiles += 1;
+      maxDistance = Math.max(maxDistance, distance);
+      maxDuration = Math.max(maxDuration, this.movementDuration(tile, target));
+    }
+    return { movingTiles, maxDistance, maxDuration };
   }
 
   syncTileValues(tiles) {
@@ -235,7 +300,9 @@ export class Renderer {
       pooledTileElements: this.tilePool.length,
       retainedTileElements: this.activeTiles.size + this.tilePool.length,
       activeMovementAnimations,
-      activePulseAnimations
+      activePulseAnimations,
+      cellStep: this.cellStep,
+      geometryUpdates: this.geometryUpdates
     };
   }
 
