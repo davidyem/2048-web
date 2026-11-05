@@ -1,3 +1,4 @@
+import { trace, traceLog, tracing } from './diagnostics.js';
 import { Game, SIZE } from './game.js';
 import { Input } from './input.js';
 import { MOVE_MS, Renderer } from './renderer.js';
@@ -162,6 +163,7 @@ let pendingDirection = null;
 let pendingInputEvent = null;
 let moveSerial = 0;
 let interruptedMoves = 0;
+const PENDING_MAX_AGE_MS = 80;
 
 renderer.updateBest(game.best);
 
@@ -218,10 +220,14 @@ function runPendingMove() {
   const inputEvent = pendingInputEvent;
   pendingDirection = null;
   pendingInputEvent = null;
+  if (performance.now() - inputEvent.at > PENDING_MAX_AGE_MS) {
+    trace('rejected', { ...inputEvent, direction, reason: 'expired' });
+    return;
+  }
   performMove(direction, inputEvent);
 }
 
-function commitMove(move, { interrupted = false } = {}) {
+function presentMove(move, { interrupted = false } = {}) {
   if (!move || move.done) return;
   move.done = true;
   if (activeMove === move) activeMove = null;
@@ -235,9 +241,8 @@ function commitMove(move, { interrupted = false } = {}) {
   const { result } = move;
   for (const id of result.removedIds) renderer.removeTileEl(id);
 
-  const bestChanged = game.applyMoveResult(result);
   renderer.updateScore(game.score);
-  if (bestChanged) renderer.updateBest(game.best);
+  renderer.updateBest(game.best);
 
   renderer.syncTileValues(game.tiles);
 
@@ -248,11 +253,9 @@ function commitMove(move, { interrupted = false } = {}) {
     }
   }
 
-  const spawned = game.makeRandomTile(game.tiles);
-  if (spawned) {
-    game.tiles.push(spawned);
-    renderer.tileElement(spawned, { animateNew: !interrupted });
-  }
+  const { spawned } = move;
+  if (spawned) renderer.tileElement(spawned, { animateNew: !interrupted });
+  trace('visual-commit', { move: move.id, gesture: move.input.gesture, board: boardSnapshot() });
 
   performanceMonitor?.recordCommit({
     id: move.id,
@@ -262,19 +265,18 @@ function commitMove(move, { interrupted = false } = {}) {
     interrupted
   });
 
-  const state = game.evaluateState();
+  const state = move.state;
   if (state) {
+    pendingDirection = null;
+    pendingInputEvent = null;
     renderer.showState(state);
     if (!state.showContinue) {
-      pendingDirection = null;
-      pendingInputEvent = null;
       performanceMonitor?.recordLifecycle('game-over');
       flushBestScore();
       clearGameState();
       return;
     }
   }
-  scheduleGameStateSave();
   runPendingMove();
 }
 
@@ -291,57 +293,62 @@ function interruptActiveMove() {
 
   pendingDirection = null;
   pendingInputEvent = null;
-  renderer.finishTileMoves(game.tiles, activeMove.result.motions);
+  renderer.finishTileMoves();
   renderer.cancelTilePulses();
-  commitMove(activeMove, { interrupted: true });
+  presentMove(activeMove, { interrupted: true });
 }
 
-function performMove(direction, deferredInputEvent = null) {
-  const inputEvent = deferredInputEvent
-    || performanceMonitor?.recordInput(direction, Boolean(activeMove));
-  // Keep only the latest direction while a move is active. It runs as soon
-  // as that move commits, so rapid input cannot build up a move backlog.
+function boardSnapshot() {
+  if (!tracing) return undefined;
+  return game.tiles.map(({ id, row, col, value }) => ({ id, row, col, value }));
+}
+
+function performMove(direction, command = null) {
+  const inputEvent = command || { at: performance.now(), source: 'debug' };
+  if (document.hidden || renderer.isOverlayShown() || input.calibrationActive) {
+    trace('rejected', { ...inputEvent, direction, reason: 'inactive' });
+    return;
+  }
   if (activeMove) {
+    if (pendingInputEvent) trace('replaced', { ...pendingInputEvent, direction: pendingDirection });
     pendingDirection = direction;
     pendingInputEvent = inputEvent;
+    trace('queued', { ...inputEvent, direction });
     performanceMonitor?.recordPending(direction);
     return;
   }
-  if (renderer.isOverlayShown() && !game.keepPlaying) return;
-
   const result = game.calculateMove(direction);
   if (!result.changed) {
+    trace('rejected', { ...inputEvent, direction, reason: 'unchanged' });
     performanceMonitor?.recordInvalidMove(inputEvent);
     return;
   }
-
-  const move = {
-    id: ++moveSerial,
-    session: game.gameSession,
-    result,
-    done: false
-  };
+  const before = game.tiles;
+  const move = { id: ++moveSerial, session: game.gameSession, result, input: inputEvent, done: false };
   activeMove = move;
+  trace('move-start', { move: move.id, ...inputEvent, direction, before: boardSnapshot() });
+  performanceMonitor?.recordMoveStart({ id: move.id, input: inputEvent, direction,
+    ...renderer.getMovementMetrics(before, result.motions), merge: result.mergedIds.length > 0, spawn: true });
 
-  if (performanceMonitor) {
-    const metrics = renderer.getMovementMetrics(game.tiles, result.motions);
-    performanceMonitor.recordMoveStart({
-      id: move.id,
-      input: inputEvent,
-      direction,
-      ...metrics,
-      merge: result.mergedIds.length > 0,
-      spawn: true
-    });
-  }
-
-  renderer.moveTiles(game.tiles, result.motions).then(completed => {
+  // Commit rules/spawn exactly once at acceptance. Rendering cannot mutate rules.
+  game.applyMoveResult(result);
+  move.spawned = game.makeRandomTile();
+  if (move.spawned) game.tiles.push(move.spawned);
+  move.state = game.evaluateState();
+  scheduleGameStateSave();
+  trace('commit', { move: move.id, gesture: inputEvent.gesture, after: boardSnapshot(), spawned: move.spawned ? { ...move.spawned } : null });
+  renderer.moveTiles(before, result.motions).then(completed => {
     performanceMonitor?.recordMoveEnd(move.id, completed);
-    if (completed) commitMove(move);
+    if (move.done || move.session !== game.gameSession) return;
+    // External cancellation settles to the already committed board as well.
+    if (!completed) renderer.finishTileMoves();
+    presentMove(move);
   });
 }
 
 function resetGame() {
+  input.cancelGestures();
+  trace('reset');
   performanceMonitor?.recordLifecycle('new-game');
   flushBestScore();
   clearGameState();
@@ -363,9 +370,20 @@ function resetGame() {
 
 const input = new Input(storage, performMove);
 input.attach();
+function suspendInput() {
+  input.cancelGestures();
+  pendingDirection = null;
+  pendingInputEvent = null;
+  if (document.hidden) interruptActiveMove();
+  flushGameState();
+  flushBestScore();
+}
+window.addEventListener('blur', suspendInput);
+document.addEventListener('visibilitychange', () => { if (document.hidden) suspendInput(); });
 
 // Small debug surface used by automated checks. It does not change the UI.
 window.__2048Debug = {
+  traceLog,
   directionFromVector(x, y, factor = 1) {
     return input.directionFromVector(x, y, factor);
   },
@@ -390,6 +408,8 @@ window.__2048Debug = {
     cancelActiveMove();
     renderer.hideOverlay();
     game.score = 0;
+    game.wonShown = false;
+    game.keepPlaying = false;
     game.tiles = [];
     for (let row = 0; row < SIZE; row++) {
       for (let col = 0; col < SIZE; col++) {

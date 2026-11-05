@@ -1,9 +1,6 @@
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-export const MOVE_MS = REDUCED_MOTION ? 1 : 110;
-const MOVE_MIN_MS = 105;
-const MOVE_STEP_MS = 20;
-const MOVE_MAX_MS = 145;
+export const MOVE_MS = REDUCED_MOTION ? 1 : 120;
 
 export class Renderer {
   constructor(performanceMonitor = null) {
@@ -23,6 +20,7 @@ export class Renderer {
     this.entryByElement = new WeakMap();
     this.createdTileElements = 0;
     this.performanceMonitor = performanceMonitor;
+    this.batch = null;
     this.cellStep = 0;
     this.geometryUpdates = 0;
     this.refreshGeometry();
@@ -76,28 +74,13 @@ export class Renderer {
     for (const entry of this.activeTiles.values()) this.cancelTilePulse(entry);
   }
 
-  finishTileMoves(tiles, motions) {
-    for (const tile of tiles) {
-      const target = motions.get(tile.id);
-      if (!target || (target.row === tile.row && target.col === tile.col)) continue;
-      const entry = this.activeTiles.get(tile.id);
-      if (entry) this.finishTileMovement(entry);
-    }
+  finishTileMoves() {
+    if (!this.batch) return;
+    this.batch.settle(true);
   }
 
-  finishTileMovement(entry) {
-    const animation = entry.movement;
-    if (!animation) return;
-    entry.movement = null;
-    animation.finish();
-    animation.cancel();
-  }
-
-  cancelTileMovement(entry) {
-    const animation = entry.movement;
-    if (!animation) return;
-    entry.movement = null;
-    animation.cancel();
+  cancelTileMovement() {
+    this.batch?.settle(false);
   }
 
   tileElement(tile, { animateNew = true } = {}) {
@@ -143,7 +126,7 @@ export class Renderer {
   }
 
   recycleTileEntry(entry) {
-    this.cancelTileMovement(entry);
+    this.cancelTileMovement();
     this.cancelTilePulse(entry);
     entry.el.remove();
     entry.el.className = 'tile';
@@ -197,6 +180,12 @@ export class Renderer {
 
     this.cellStep = nextCellStep;
     this.geometryUpdates += 1;
+    for (const { animation, from, to } of this.batch?.movements || []) {
+      animation.effect.setKeyframes([
+        { transform: this.tileTransform(from.row, from.col) },
+        { transform: this.tileTransform(to.row, to.col) }
+      ]);
+    }
     for (const entry of this.activeTiles.values()) {
       this.setTilePosition(entry, entry.row, entry.col);
     }
@@ -213,51 +202,45 @@ export class Renderer {
     return `translate3d(${col * this.cellStep}px, ${row * this.cellStep}px, 0)`;
   }
 
-  movementDuration(from, to) {
-    if (REDUCED_MOTION) return MOVE_MS;
-    const distance = Math.abs(to.row - from.row) + Math.abs(to.col - from.col);
-    return Math.min(MOVE_MAX_MS, MOVE_MIN_MS + (distance - 1) * MOVE_STEP_MS);
-  }
-
-  animateTileMovement(entry, from, to) {
-    this.cancelTileMovement(entry);
-    const fromTransform = this.tileTransform(from.row, from.col);
-    const toTransform = this.tileTransform(to.row, to.col);
-    this.setTilePosition(entry, to.row, to.col);
-    const duration = this.movementDuration(from, to);
-    const animation = entry.el.animate([
-      { transform: fromTransform },
-      { transform: toTransform }
-    ], {
-      duration,
-      easing: 'ease-in-out'
-    });
-    entry.movement = animation;
-    return { entry, animation };
-  }
+  movementDuration() { return MOVE_MS; }
 
   moveTiles(tiles, motions) {
+    this.batch?.settle(false);
+    this.cancelTilePulses();
     const movements = [];
+    // One timeline instant and progress for every tile, including merge partners.
+    const startTime = document.timeline.currentTime;
     for (const tile of tiles) {
-      const target = motions.get(tile.id);
+      const to = motions.get(tile.id);
       const entry = this.activeTiles.get(tile.id);
-      if (!target || !entry) continue;
-      if (target.row === tile.row && target.col === tile.col) {
-        this.setTilePosition(entry, target.row, target.col);
-        continue;
-      }
-      movements.push(this.animateTileMovement(entry, tile, target));
+      if (!to || !entry) continue;
+      this.setTilePosition(entry, to.row, to.col);
+      if (to.row === tile.row && to.col === tile.col) continue;
+      const animation = entry.el.animate([
+        { transform: this.tileTransform(tile.row, tile.col) },
+        { transform: this.tileTransform(to.row, to.col) }
+      ], { duration: MOVE_MS, easing: 'ease-in-out' });
+      animation.startTime = startTime;
+      entry.movement = animation;
+      movements.push({ entry, animation, from: tile, to });
     }
     if (!movements.length) return Promise.resolve(true);
-
-    const completions = movements.map(({ animation }) => animation.finished.then(
-      () => true,
-      () => false
-    ));
-    return Promise.all(completions).then(results => results.every(Boolean)).finally(() => {
-      for (const { entry, animation } of movements) {
-        if (entry.movement === animation) entry.movement = null;
-      }
+    return new Promise(resolve => {
+      const batch = { movements, settle: completed => {
+        if (this.batch !== batch) return;
+        this.batch = null;
+        for (const { entry, animation } of movements) {
+          animation.onfinish = null;
+          animation.oncancel = null;
+          entry.movement = null;
+          animation.cancel();
+        }
+        resolve(completed);
+      } };
+      this.batch = batch;
+      // All effects share duration/startTime; a single completion owns the batch.
+      movements[0].animation.onfinish = () => batch.settle(true);
+      for (const { animation } of movements) animation.oncancel = () => batch.settle(false);
     });
   }
 

@@ -153,7 +153,7 @@ export class PerformanceMonitor {
       this.frames.push({ t: this.relativeTime(timestamp), delta: round(delta, 2) });
       if (this.currentMove && this.currentMove.firstFrameAt === null) {
         this.currentMove.firstFrameAt = observedAt;
-        this.record('move-first-frame', {
+        this.record('move-frame-opportunity', {
           id: this.currentMove.id,
           inputLatency: this.currentMove.input
             ? round(observedAt - this.currentMove.input.at, 2)

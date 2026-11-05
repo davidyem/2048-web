@@ -1,3 +1,5 @@
+import { WheelGesture } from './wheel.js';
+import { trace } from './diagnostics.js';
 const TRACKPAD_FACTOR_KEY = '2048-trackpad-factor-v5';
 
 const keyToDirection = {
@@ -16,6 +18,7 @@ export class Input {
     this.trackpadSkipBtn = document.getElementById('trackpadSkip');
 
     this.gestureSerial = 0;
+    this.pointerSerial = 0;
     this.pointerStart = null;
     this.swipeClickGuard = null;
 
@@ -29,37 +32,34 @@ export class Input {
     this.calibrationX = 0;
     this.calibrationY = 0;
 
-    this.wheelState = {
-      phase: 'idle',
-      x: 0,
-      y: 0,
-      lastAt: 0,
-      lastMagnitude: 0,
-      dispatchedAt: 0,
-      lockedAxis: null,
-      lockedSign: 0,
-      idleTimer: 0
-    };
+    this.wheelState = new WheelGesture();
   }
 
   attach() {
     window.addEventListener('keydown', event => {
       const direction = keyToDirection[event.key];
-      if (!direction) return;
+      if (!direction || event.ctrlKey || event.metaKey || event.altKey
+        || event.target.closest?.('input, textarea, select, [contenteditable]')
+        || this.calibrationActive) return;
       event.preventDefault();
-      this.dispatchDirection(direction, 'keyboard');
+      this.dispatchDirection(direction, 'keyboard', { eventAt: event.timeStamp });
     }, { passive: false, capture: true });
 
     // Touch input uses actual pointer coordinates, so it follows the finger
     // exactly: right-to-left means LEFT, bottom-to-top means UP, and so on.
     window.addEventListener('pointerdown', event => {
-      if (event.pointerType === 'mouse' || event.isPrimary === false) return;
+      if (event.pointerType === 'mouse') return;
+      if (event.isPrimary === false) { this.pointerStart = null; return; }
+      if (this.calibrationActive || event.target.closest?.('button, input, a, .overlay')) return;
       this.pointerStart = {
         id: event.pointerId,
         x: event.clientX,
         y: event.clientY,
+        eventAt: event.timeStamp,
+        gesture: `touch-${++this.pointerSerial}`,
         target: event.target
       };
+      trace('gesture-start', { gesture: this.pointerStart.gesture, source: 'touch', eventAt: event.timeStamp });
     }, { passive: true, capture: true });
 
     window.addEventListener('pointermove', event => {
@@ -73,16 +73,21 @@ export class Input {
       if (!this.pointerStart || this.pointerStart.id !== event.pointerId) return;
       const dx = event.clientX - this.pointerStart.x;
       const dy = event.clientY - this.pointerStart.y;
-      const startTarget = this.pointerStart.target;
+      const { target: startTarget, gesture } = this.pointerStart;
+      trace('gesture-end', { gesture, eventAt: event.timeStamp });
       this.pointerStart = null;
 
-      if (Math.hypot(dx, dy) < 26) return;
+      if (Math.hypot(dx, dy) < 26 || Math.max(Math.abs(dx), Math.abs(dy)) < Math.min(Math.abs(dx), Math.abs(dy)) * 1.2) {
+        trace('rejected', { gesture, reason: 'swipe-threshold' });
+        return;
+      }
       if (event.cancelable) event.preventDefault();
       this.swipeClickGuard = { target: startTarget, until: performance.now() + 140 };
-      this.dispatchDirection(this.directionFromVector(dx, dy), 'touch');
+      this.dispatchDirection(this.directionFromVector(dx, dy), 'touch', { gesture, eventAt: event.timeStamp });
     }, { passive: false, capture: true });
 
     window.addEventListener('pointercancel', () => {
+      trace('gesture-cancel', { gesture: this.pointerStart?.gesture });
       this.pointerStart = null;
     }, { passive: true, capture: true });
 
@@ -115,11 +120,13 @@ export class Input {
     });
   }
 
-  dispatchDirection(direction, source) {
+  dispatchDirection(direction, source, metadata = {}) {
     document.documentElement.dataset.lastGesture = direction;
     document.documentElement.dataset.lastInput = source;
     document.documentElement.dataset.gestureSerial = String(++this.gestureSerial);
-    this.onDirection(direction);
+    const command = { at: performance.now(), gesture: `${source}-${this.gestureSerial}`, source, ...metadata };
+    trace('direction', { ...command, direction });
+    this.onDirection(direction, command);
   }
 
   directionFromVector(x, y, factor = 1) {
@@ -130,26 +137,12 @@ export class Input {
       : (mappedY > 0 ? 'down' : 'up');
   }
 
-  resetWheelState() {
-    this.wheelState.phase = 'idle';
-    this.wheelState.x = 0;
-    this.wheelState.y = 0;
-    this.wheelState.lastMagnitude = 0;
-    this.wheelState.lockedAxis = null;
-    this.wheelState.lockedSign = 0;
-  }
+  resetWheelState() { this.wheelState.reset(); }
 
-  scheduleWheelIdleReset() {
-    clearTimeout(this.wheelState.idleTimer);
-    this.wheelState.idleTimer = window.setTimeout(() => this.resetWheelState(), 125);
-  }
-
-  beginWheelBurst() {
-    this.wheelState.phase = 'collecting';
-    this.wheelState.x = 0;
-    this.wheelState.y = 0;
-    this.wheelState.lockedAxis = null;
-    this.wheelState.lockedSign = 0;
+  cancelGestures() {
+    this.pointerStart = null;
+    this.swipeClickGuard = null;
+    this.wheelState.lock(performance.now());
   }
 
   showTrackpadSetup() {
@@ -195,11 +188,7 @@ export class Input {
     this.saveTrackpadFactor(observedRawX > 0 ? -1 : 1);
     this.trackpadSetupStatus.textContent = 'Готово';
     this.hideTrackpadSetup();
-    this.resetWheelState();
-    this.wheelState.phase = 'locked';
-    this.wheelState.dispatchedAt = performance.now();
-    this.wheelState.lockedAxis = 'x';
-    this.wheelState.lockedSign = Math.sign(observedRawX) || -1;
+    this.wheelState.lock(performance.now());
     this.dispatchDirection('left', 'trackpad-calibration');
     return true;
   }
@@ -210,64 +199,22 @@ export class Input {
     if (Math.abs(delta.x) < 0.05 && Math.abs(delta.y) < 0.05) return;
     if (event.cancelable) event.preventDefault();
 
+    const packet = this.wheelState.push(delta.x, delta.y, event.timeStamp, event.momentum);
+    const gesture = `wheel-${packet.id}`;
+    trace('wheel', { eventAt: event.timeStamp, gesture, ...delta, momentum: event.momentum, reason: packet.reason });
+    if (packet.ended) trace('gesture-end', { gesture: `wheel-${packet.ended}`, inferred: true });
+    if (packet.start) trace('gesture-start', { gesture, source: 'trackpad' });
+    if (packet.reason !== 'recognized') return;
+    // A wheel gesture's end is inferred only when the next series starts.
+    trace('gesture-recognized', { gesture, x: packet.x, y: packet.y });
     if (this.calibrationActive) {
-      this.calibrationX += delta.x;
-      this.calibrationY += delta.y;
+      this.calibrationX = packet.x;
+      this.calibrationY = packet.y;
       this.finishTrackpadCalibration();
       return;
     }
-
-    // A non-calibrated desktop still gets a usable fallback, but on a Mac
-    // the setup is shown before normal play so physical direction is exact.
-    const factor = this.trackpadFactor ?? 1;
-    const now = performance.now();
-    const gap = this.wheelState.lastAt ? now - this.wheelState.lastAt : Infinity;
-    const absX = Math.abs(delta.x);
-    const absY = Math.abs(delta.y);
-    const magnitude = Math.max(absX, absY);
-    const axis = absX > absY ? 'x' : 'y';
-    const sign = Math.sign(axis === 'x' ? delta.x : delta.y);
-
-    let startsNewBurst = this.wheelState.phase === 'idle' || gap > 90;
-
-    if (this.wheelState.phase === 'locked' && !startsNewBurst) {
-      const oldEnough = now - this.wheelState.dispatchedAt > 95;
-      const directionChanged = axis !== this.wheelState.lockedAxis || sign !== this.wheelState.lockedSign;
-      const clearRestart = magnitude >= Math.max(5, this.wheelState.lastMagnitude * 1.75);
-
-      // Momentum normally decays. A fresh finger movement creates either a
-      // sign/axis change or a sharp magnitude increase, even if the old
-      // momentum packets have not fully stopped yet.
-      if (oldEnough && ((directionChanged && magnitude >= 3.5) || clearRestart)) {
-        startsNewBurst = true;
-      }
-    }
-
-    if (startsNewBurst) this.beginWheelBurst();
-
-    this.wheelState.lastAt = now;
-    this.wheelState.lastMagnitude = magnitude;
-    this.scheduleWheelIdleReset();
-
-    if (this.wheelState.phase !== 'collecting') return;
-
-    this.wheelState.x += delta.x;
-    this.wheelState.y += delta.y;
-
-    const totalX = Math.abs(this.wheelState.x);
-    const totalY = Math.abs(this.wheelState.y);
-    const dominant = Math.max(totalX, totalY);
-    const minor = Math.min(totalX, totalY);
-    if (dominant < 18) return;
-    if (minor > 0 && dominant / minor < 1.18 && dominant < 44) return;
-
-    const rawAxis = totalX > totalY ? 'x' : 'y';
-    const rawValue = rawAxis === 'x' ? this.wheelState.x : this.wheelState.y;
-    this.wheelState.phase = 'locked';
-    this.wheelState.dispatchedAt = now;
-    this.wheelState.lockedAxis = rawAxis;
-    this.wheelState.lockedSign = Math.sign(rawValue);
-    this.dispatchDirection(this.directionFromVector(this.wheelState.x, this.wheelState.y, factor), 'trackpad');
+    this.dispatchDirection(this.directionFromVector(packet.x, packet.y, this.trackpadFactor ?? 1),
+      'trackpad', { gesture, eventAt: event.timeStamp });
   }
 
   setTrackpadFactor(factor) {
