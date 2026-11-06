@@ -45,23 +45,26 @@ ready = call('/execute/async', {'script': '''const done=arguments[0];
 fetch('./diagnostics/safari.js').then(r=>r.text()).then(s=>eval(s)).then(done,e=>done({error:String(e)}));''', 'args': []})
 if isinstance(ready, dict) and ready.get('error'):
     raise RuntimeError(ready)
-js('''__2048Debug.setTrackpadFactor(-1);window.__nativeErrors=[];
-window.addEventListener('error',e=>__nativeErrors.push(e.message));
-window.addEventListener('unhandledrejection',e=>__nativeErrors.push(String(e.reason)));
-Math.random=()=>0;''')
-meta = js('return {ua:navigator.userAgent,url:location.href,hidden:document.hidden,viewport:[innerWidth,innerHeight]};')
-points = js('''const b=document.getElementById('boardWrap').getBoundingClientRect(),
-c=e=>{const r=e.getBoundingClientRect();return [Math.round(r.x+r.width/2),Math.round(r.y+r.height/2)]};
-return {occupied:[Math.round(b.x+b.width*.375),Math.round(b.y+b.height*.375)],
-empty:[Math.round(b.x+b.width*.125),Math.round(b.y+b.height*.125)],
-left:[Math.round(b.left-20),Math.round(b.y+b.height/2)],right:[Math.round(b.right+20),Math.round(b.y+b.height/2)],
-above:[Math.round(b.x+b.width/2),Math.round(b.top-10)],below:[Math.round(b.x+b.width/2),Math.min(innerHeight-1,Math.round(b.bottom+10))],
-score:c(document.getElementById('score')),background:[20,20],button:c(document.getElementById('newGame'))};''')
-board = [[0,0,0,0],[0,2,0,0],[0,0,4,0],[0,0,0,0]]
+saved_factor = js("return localStorage.getItem('2048-trackpad-factor-v5');")
 rows = []
-ax = ay = 0
-areas = ['occupied','empty','left','right','above','below','score','background','button']
+meta = {}
 try:
+    js('''__2048Debug.setTrackpadFactor(-1);window.__nativeErrors=[];
+    window.addEventListener('error',e=>__nativeErrors.push(e.message));
+    window.addEventListener('unhandledrejection',e=>__nativeErrors.push(String(e.reason)));
+    Math.random=()=>0;''')
+    meta = js('return {ua:navigator.userAgent,url:location.href,hidden:document.hidden,viewport:[innerWidth,innerHeight]};')
+    points = js('''const b=document.getElementById('boardWrap').getBoundingClientRect(),
+    c=e=>{const r=e.getBoundingClientRect();return [Math.round(r.x+r.width/2),Math.round(r.y+r.height/2)]};
+    return {occupied:[Math.round(b.x+b.width*.375),Math.round(b.y+b.height*.375)],
+    empty:[Math.round(b.x+b.width*.125),Math.round(b.y+b.height*.125)],
+    left:[Math.round(b.left-20),Math.round(b.y+b.height/2)],right:[Math.round(b.right+20),Math.round(b.y+b.height/2)],
+    above:[Math.round(b.x+b.width/2),Math.round(b.top-10)],below:[Math.round(b.x+b.width/2),Math.min(innerHeight-1,Math.round(b.bottom+10))],
+    gap:[Math.round(b.x+b.width/2),Math.round(b.y+b.height/2)],best:c(document.getElementById('best')),score:c(document.getElementById('score')),background:[20,20],button:c(document.getElementById('newGame'))};''')
+    board = [[0,0,0,0],[0,2,0,0],[0,0,4,0],[0,0,0,0]]
+    rows = []
+    ax = ay = 0
+    areas = ['occupied','empty','left','right','above','below','score','best','gap','background','button']
     for round_no in range(a.rounds):
         for area in areas:
             x, y = points[area]
@@ -106,6 +109,9 @@ finally:
         'cases':rows,'errors':js('return __nativeErrors;')}
     with open(a.output,'w') as out:
         json.dump(report,out,indent=2)
+    js("const value="+json.dumps(saved_factor)+";if(value===null)localStorage.removeItem('2048-trackpad-factor-v5');else localStorage.setItem('2048-trackpad-factor-v5',value);")
     # Keep the session open for screenshots. Reload restores Math.random and probes.
     call('/refresh', {})
 print(json.dumps({'cases':len(rows),'passed':sum(r['pass'] for r in rows),'errors':report['errors'],'output':a.output}))
+
+raise SystemExit(0 if rows and all(r["pass"] for r in rows) and not report["errors"] else 1)

@@ -58,5 +58,10 @@ try {
   assert.equal(commands.length, 2, 'explicit Chrome momentum never commands');
   packet(910, -30, 0, false);
   assert.deepEqual(commands, ['left','right','left'], 'Chrome contact after momentum still rearms');
+  input.resetWheelState(); commands.length = 0;
+  for (const t of [1000, 100, 1100]) packet(t);
+  assert.deepEqual(commands, ['left'], 'backward timestamp cannot create a false quiet gap');
+  packet(1320, 30);
+  assert.deepEqual(commands, ['left','right'], 'monotonic clock resumes normally');
   console.log('Input clock fallback, directions, tail suppression, cancellation and valid-clock preservation passed');
 } finally { globalThis.performance = realPerformance; }

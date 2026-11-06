@@ -11,7 +11,8 @@ export class WheelGesture {
   push(x, y, at, momentum) {
     const restart = this.phase === 'idle' || at - this.lastAt >= WHEEL_QUIET_MS
       || (this.momentum && momentum === false);
-    this.lastAt = at;
+    // An out-of-order packet must not manufacture a quiet gap for the next one.
+    this.lastAt = Math.max(this.lastAt, at);
     this.momentum = momentum === true;
     if (momentum === true) {
       this.phase = 'locked';

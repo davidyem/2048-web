@@ -40,7 +40,7 @@ also removes all instrumentation. `coverage.js` preserves the calibration factor
 
 ## Reproducible Safari WebDriver checks
 
-Use a dedicated automation session: this test replaces its board and calibration.
+Use a dedicated automation session: this test replaces its board and temporarily sets calibration, restoring the original saved value and reloading in finally.
 It does not automate physical contact with the trackpad. No dependency installation
 or global MCP configuration is needed:
 
@@ -54,11 +54,10 @@ node tests/engine.mjs
 ```
 
 `--session ID` reuses a dedicated session. `--url URL` selects an unchanged baseline
-server; `--rounds 1` runs 36 cases, the default runs 108. Inspect `pass`, delivered
+server; `--rounds 1` runs 44 cases, the default runs 132. Inspect `pass`, delivered
 packets, coordinates, target/path, directions, logical commits, board and scroll.
 The process retains the automation window for inspection and reloads after testing
-to remove probes and restore Math.random. A completed report can contain failures;
-read the counts rather than treating process exit as a pass.
+to remove probes and restore Math.random. Failures are retained in the report and cause a nonzero exit status.
 
 Safari 27.2's native wheel Actions delivered trusted events with timestamp zero.
 Baseline recognized only the first of 36 separated events; the clock fallback
@@ -114,3 +113,9 @@ Touch direction is recognized on pointerup, so finger travel time is outside the
 120 ms animation. Buffer waiting and 92/104 ms spawn/merge decorations can affect
 perceived tempo; decorations do not delay acceptance of the next move. No conclusion
 about changing duration or easing is justified before this physical-device record.
+
+Final QA also guards against backward event timestamps manufacturing a quiet gap.
+Positive chronological timestamps, the 220 ms policy and explicit momentum rules remain unchanged.
+The browser suite requires completing/skipping initial calibration; it no longer changes the preference.
+Held-time interpolation and shared-start assertions replace comparisons of sequential live style reads;
+this improves test validity, not production frame pacing.

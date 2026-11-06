@@ -1,5 +1,7 @@
 // Run in a visible browser at /?trace=1: await (await import('./tests/browser.js')).run()
 export async function run() {
+  if (document.getElementById('trackpadSetup').classList.contains('show'))
+    throw Error('Complete or skip trackpad setup before running tests; tests preserve your calibration.');
   const d = window.__2048Debug, sleep = ms => new Promise(r => setTimeout(r, ms));
   const frame = () => new Promise(requestAnimationFrame), results = [];
   const assert = (name, pass, detail) => { results.push({ name, pass: Boolean(pass), detail }); if (!pass) throw Error(JSON.stringify(results)); };
@@ -7,7 +9,6 @@ export async function run() {
   const boardEl = document.getElementById('boardWrap');
   const key = key => window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
   const pointer = (type, x, y, extra = {}) => boardEl.dispatchEvent(new PointerEvent(type, { pointerId: 1, pointerType: 'touch', isPrimary: true, clientX: x, clientY: y, bubbles: true, cancelable: true, ...extra }));
-  d.setTrackpadFactor(1);
   const originalRandom = Math.random; let seed = 2048;
   Math.random = () => ((seed = (Math.imul(seed,1664525)+1013904223)>>>0)/2**32);
   try {
@@ -22,12 +23,24 @@ export async function run() {
     d.setBoard(sparse);d.move('left');let serial=d.getAnimationState().moveSerial;
     const durations=document.getAnimations().filter(a=>a.effect.target.classList.contains('tile')).map(a=>a.effect.getTiming().duration);
     assert('common duration',new Set(durations).size===1,durations);
+    const movements=document.getAnimations().filter(a=>a.effect.target.classList.contains('tile'));
+    assert('shared movement timeline',movements.length===2&&new Set(movements.map(a=>a.startTime)).size===1);
+    // Live computed-style reads are sequential; WebKit can advance between them.
+    // Compare interpolation at a held timestamp, then test live monotonic motion.
+    movements.forEach(a=>a.pause());await Promise.all(movements.map(a=>a.ready));
+    for(const t of [30,60,90]) {
+      movements.forEach(a=>{a.currentTime=t;});
+      const x=movements.map(a=>new DOMMatrix(getComputedStyle(a.effect.target).transform).m41);
+      assert('equal progress at '+t,Math.abs(x[0]*3-x[1])<.02,x);
+    }
+    const restartAt=document.timeline.currentTime;
+    movements.forEach(a=>{a.currentTime=0;a.play();a.startTime=restartAt;});
     const samples=[];
     while(d.getAnimationState().active){await frame();samples.push([...document.querySelectorAll('.tile')].map(el=>({id:el.dataset.id,x:new DOMMatrix(getComputedStyle(el).transform).m41})));}
     assert('single commit',d.getAnimationState().moveSerial===serial);
     assert('merge and one spawn',d.getBoard().flat().filter(Boolean).length===2&&d.getBoard()[0][0]===4);
     const moving = samples.filter(s => s.length === 2 && s[0].id === samples[0][0].id && s[1].id === samples[0][1].id);
-    assert('equal progress and monotonic frames', moving.every((s,i) => Math.abs(s[0].x*3-s[1].x)<.02 && (!i || s[0].x<=moving[i-1][0].x+.01)), samples);
+    assert('live monotonic frames', moving.every((s,i) => !i || s.every((tile,j)=>tile.x<=moving[i-1][j].x+.01)), samples);
     d.setBoard([[2,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]]);serial=d.getAnimationState().moveSerial;d.move('left');await sleep(180);
     assert('unchanged no spawn',d.getAnimationState().moveSerial===serial&&d.getBoard().flat().filter(Boolean).length===1);
     d.setBoard(sparse);d.move('left');serial=d.getAnimationState().moveSerial;await sleep(65);key('ArrowDown');key('ArrowRight');await sleep(350);
