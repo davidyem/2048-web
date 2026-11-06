@@ -1,9 +1,10 @@
 # Safari input diagnosis
 
-Baseline: 5c6803d. This directory is not loaded by the game. The investigation
-branch contains a narrow Input clock fallback for zero/unavailable wheel timestamps.
-It fixes a reproduced Safari WebDriver lock, not a proven physical-trackpad coverage bug.
-No renderer, duration, gesture thresholds, calibration algorithm or CSS changes.
+This directory is not loaded by the game. The original clock investigation used
+baseline 5c6803d; the physical gesture segmentation investigation used 9ad04b8.
+The clock fallback fixes zero/unavailable Safari WebDriver timestamps. A separate
+fallback now recognizes sustained direction changes when momentum is unavailable.
+No renderer, duration, calibration algorithm or CSS changes.
 
 ## Mac: delivery before recognition
 
@@ -33,7 +34,7 @@ provided the page had focus and this exact gesture was physically performed.
 
 Use `__safari2048.inspect(x,y)` to inspect hit-test targets and CSS at viewport coordinates.
 Occupied tiles are normally skipped because `.tile-layer` inherits pointer-events:none.
-The journal keeps 1024 raw records and 128 compact gesture summaries, plus focus,
+The journal keeps 4096 raw records and 128 compact gesture summaries, plus focus,
 visibility, arrival gaps, timestamp, calibration factor and rejection reasons.
 `freeze()` restores the original handler and removes diagnostic listeners. Reload
 also removes all instrumentation. `coverage.js` preserves the calibration factor.
@@ -50,6 +51,7 @@ python3 -m http.server 8001 --bind 127.0.0.1
 # In another terminal, after the two servers are running:
 python3 diagnostics/safari-webdriver.py --output /tmp/2048-safari-matrix.json
 node tests/input-clock.mjs
+node tests/wheel-fallback.mjs
 node tests/engine.mjs
 ```
 
@@ -72,11 +74,27 @@ The current [WebKit dispatcher source](https://github.com/WebKit/WebKit/blob/mai
 subtracts the preceding scrollDelta and notes that scroll interpolation is not implemented.
 Do not interpret `duration` on this action as a physical swipe duration.
 
-Without a momentum field, the recognizer still waits for 220 ms of silence after
-the last wheel packet. An opposite packet after 80 ms is deliberately suppressed;
-after 260 ms it is recognized. The [WebKit WheelEvent interface](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/dom/WheelEvent.idl)
-does not expose native contact/momentum phases. Re-arming on a larger delta, axis
-reversal or pointer movement would risk restoring ghost commands and is not used.
+Without a momentum field, 220 ms of silence still starts a new gesture. A sustained
+direction change can also rearm: at least 80 ms after the preceding recognition,
+three or more consecutive dominant packets spanning at least 24 ms and accumulating
+48 delta units within 100 ms. Each packet must have magnitude at least 3 and a
+dominant-axis ratio of at least 1.5. An isolated reversal, amplitude spike or pointer
+movement cannot rearm. Cancellation clears this candidate. Explicit boolean momentum
+continues through the existing path, without the fallback.
+
+The [WebKit WheelEvent interface](https://github.com/WebKit/WebKit/blob/main/Source/WebCore/dom/WheelEvent.idl)
+does not expose native contact/momentum phases. Same-direction repeats still need
+the quiet gap. A sustained reversal during one physical contact can be indistinguishable
+from a separate swipe; this fallback is a practical compromise, not a contact detector.
+
+Physical Safari 27.2 validation on November 6, 2026 delivered 470 trusted packets
+above the page background: four stationary-cursor swipes left/right/up/down, then
+one strong left swipe. The new recognizer produced exactly those five directions,
+five commits and five spawns. Direction-change confirmation took 33/28/25 ms;
+the final strong swipe lasted about 1.54 s with no second command. Replaying those
+same packets through baseline 9ad04b8 produced only two commands (left, left).
+The baseline missed the three changes because packets kept its lock alive; event
+delivery, the coordinator and unchanged board moves were not the cause in this trace.
 
 Only AFTER recording default mode, call `__safari2048.phases()` to add passive probes
 on window/document/html/body, capture and bubble. Adding listeners can itself alter
@@ -115,7 +133,12 @@ perceived tempo; decorations do not delay acceptance of the next move. No conclu
 about changing duration or easing is justified before this physical-device record.
 
 Final QA also guards against backward event timestamps manufacturing a quiet gap.
-Positive chronological timestamps, the 220 ms policy and explicit momentum rules remain unchanged.
+Positive chronological timestamps, the quiet-gap threshold and explicit momentum rules remain unchanged.
 The browser suite requires completing/skipping initial calibration; it no longer changes the preference.
 Held-time interpolation and shared-start assertions replace comparisons of sequential live style reads;
 this improves test validity, not production frame pacing.
+
+For the continuous-gesture investigation, mark once before the whole four-swipe series.
+Do not press M between its swipes: the extra interaction can introduce an artificial quiet gap.
+The first physical left swipe can use the existing calibration prompt, followed by right/up/down.
+No timer, classifier or extra wheel listener is installed by this recorder.

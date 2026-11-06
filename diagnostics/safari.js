@@ -10,7 +10,7 @@
   const name = el => el === window ? 'window' : el === document ? 'document' :
     el?.nodeType === 1 ? el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') +
     (el.classList.length ? '.' + [...el.classList].join('.') : '') : String(el);
-  const push = data => { records.push({ observedAt: performance.now(), label, ...data }); if (records.length > 1024) records.shift(); };
+  const push = data => { records.push({ observedAt: performance.now(), label, ...data }); if (records.length > 4096) records.shift(); };
   const detail = e => ({ eventAt: e.timeStamp, trusted: e.isTrusted, target: name(e.target),
     path: e.composedPath().map(name), phase: e.eventPhase, x: e.clientX, y: e.clientY,
     dx: e.deltaX, dy: e.deltaY, mode: e.deltaMode, ctrl: e.ctrlKey,
@@ -18,6 +18,8 @@
     invertedFromDevice: e.webkitDirectionInvertedFromDevice,
     hidden: document.hidden, focused: document.hasFocus(),
     cancelable: e.cancelable, prevented: e.defaultPrevented });
+  const state = input => ({ ...input.wheelState,
+    candidate: input.wheelState.candidate && { ...input.wheelState.candidate } });
   const wrapped = function(e) {
     lastInput = this;
     const arrival = performance.now();
@@ -25,13 +27,13 @@
     previousArrival = arrival;
     const before = this.getGestureSerial();
     push({ type: 'window-handler-enter', ...detail(e), arrivalGap,
-      factor: this.trackpadFactor, calibration: this.calibrationActive, state: { ...this.wheelState } });
+      factor: this.trackpadFactor, calibration: this.calibrationActive, state: state(this) });
     try { return original.call(this, e); }
     finally {
       const commands = this.getGestureSerial() - before;
       const tail = window.__2048Debug?.traceLog().slice(-8) || [];
       push({ type: 'window-handler-exit', ...detail(e), commands,
-        state: { ...this.wheelState }, trace: tail });
+        state: state(this), trace: tail });
       let summary = gestures.at(-1);
       if (!summary || summary.id !== this.wheelState.serial || summary.label !== label) {
         summary = { id: this.wheelState.serial, label, start: e.timeStamp,
