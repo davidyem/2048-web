@@ -199,9 +199,14 @@ export class Input {
     if (Math.abs(delta.x) < 0.05 && Math.abs(delta.y) < 0.05) return;
     if (event.cancelable) event.preventDefault();
 
-    const packet = this.wheelState.push(delta.x, delta.y, event.timeStamp, event.momentum);
+    // Safari WebDriver wheel events can have a zero timestamp. Such a clock
+    // never advances, leaving the quiet-gap recognizer locked indefinitely.
+    // Keep real event timestamps (including delayed batches) whenever available.
+    const eventAt = Number.isFinite(event.timeStamp) && event.timeStamp > 0
+      ? event.timeStamp : performance.now();
+    const packet = this.wheelState.push(delta.x, delta.y, eventAt, event.momentum);
     const gesture = `wheel-${packet.id}`;
-    trace('wheel', { eventAt: event.timeStamp, gesture, ...delta, momentum: event.momentum, reason: packet.reason });
+    trace('wheel', { eventAt: event.timeStamp, gestureAt: eventAt, gesture, ...delta, momentum: event.momentum, reason: packet.reason });
     if (packet.ended) trace('gesture-end', { gesture: `wheel-${packet.ended}`, inferred: true });
     if (packet.start) trace('gesture-start', { gesture, source: 'trackpad' });
     if (packet.reason !== 'recognized') return;
